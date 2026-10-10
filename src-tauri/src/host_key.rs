@@ -10,7 +10,7 @@ use crate::config::config_dir;
 
 const KNOWN_HOSTS_FILE: &str = "known_hosts";
 const DEFAULT_SSH_PORT: u16 = 22;
-const ENTRY_COMMENT: &str = "added by MyTerminal";
+const ENTRY_COMMENT: &str = "added by Nterm";
 
 /// known_hosts の「読み込み→更新→書き込み」を直列化する
 static KNOWN_HOSTS_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -161,7 +161,7 @@ mod tests {
     use super::*;
 
     fn temp_known_hosts(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("myterminal-kh-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("nterm-kh-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir.join(KNOWN_HOSTS_FILE)
     }

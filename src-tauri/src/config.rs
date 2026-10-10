@@ -11,7 +11,7 @@ use crate::codec::TerminalCodec;
 use crate::credentials;
 
 /// 設定フォルダを上書きする環境変数（開発時など）。未設定時は実行ファイルと同じフォルダ。
-const CONFIG_DIR_ENV: &str = "MYTERMINAL_CONFIG_DIR";
+const CONFIG_DIR_ENV: &str = "NTERM_CONFIG_DIR";
 const SERVERS_FILE: &str = "servers.json";
 
 /// servers.json の「読み込み→追加→書き込み」を直列化する
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn missing_file_means_no_servers() {
-        let path = std::env::temp_dir().join("myterminal-test-missing-servers.json");
+        let path = std::env::temp_dir().join("nterm-test-missing-servers.json");
         assert!(read_servers(&path).unwrap().is_empty());
     }
 
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn written_servers_can_be_read_back() {
-        let dir = std::env::temp_dir().join(format!("myterminal-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("nterm-test-{}", std::process::id()));
         let path = dir.join(SERVERS_FILE);
         let servers = append_server(&[], new_server("Web02"), "srv-new".into()).unwrap();
 

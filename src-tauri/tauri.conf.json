@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MyTerminal",
+  "productName": "Nterm",
+  "mainBinaryName": "Nterm",
   "version": "0.1.0",
-  "identifier": "com.rinno.myterminal",
+  "identifier": "com.rinno.nterm",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "MyTerminal",
+        "title": "Nterm",
         "width": 1280,
         "height": 800,
         "minWidth": 640,

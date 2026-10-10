@@ -75,7 +75,7 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
       ? attachSshSession(term, serverId, prompts)
       : undefined;
     if (!serverId) {
-      term.writeln('\x1b[1;32mWelcome to MyTerminal\x1b[0m');
+      term.writeln('\x1b[1;32mWelcome to Nterm\x1b[0m');
       term.writeln('This is a local mockup tab. Select a server to connect.');
     }
 

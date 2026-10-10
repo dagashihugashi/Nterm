@@ -1,0 +1,4 @@
+# VC++ ランタイム（vcruntime140.dll 等）を exe に静的リンクし、
+# Visual C++ 再頒布可能パッケージが入っていない PC でも exe 単体で起動できるようにする
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -135,7 +135,7 @@ mod tests {
     }
 
     fn temp_file(name: &str, content: &[u8]) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("myterminal-{}-{name}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("nterm-{}-{name}", std::process::id()));
         std::fs::write(&path, content).unwrap();
         path
     }
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn reports_missing_key_file() {
-        let path = std::env::temp_dir().join("myterminal-no-such-key");
+        let path = std::env::temp_dir().join("nterm-no-such-key");
         assert!(check_private_key(&path).unwrap_err().contains("key file not found"));
     }
 }
