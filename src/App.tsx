@@ -1,8 +1,10 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Server, X } from "lucide-react";
 import { TerminalComponent } from "./components/Terminal";
 import { ServerSidebar } from "./components/ServerSidebar";
+import { Sidebar, type SidebarView } from "./components/Sidebar";
+import { RemoteFileTree } from "./components/RemoteFileTree";
 import { ServerDialog } from "./components/ServerDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { CredentialDialog } from "./components/CredentialDialog";
@@ -12,6 +14,7 @@ import type {
   CredentialAnswer,
   CredentialRequest,
   HostKeyPrompt,
+  SessionInfo,
   SessionPrompts,
 } from "./lib/sshSession";
 import type { ServerConfig } from "./types/server";
@@ -38,6 +41,9 @@ function App() {
   const [servers, setServers] = useState<ServerConfig[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
+  const [sidebarView, setSidebarView] = useState<SidebarView>("servers");
+  /** タブIDごとの SSH セッション（Files ビューで現在のタブのセッションを使う） */
+  const [tabSessions, setTabSessions] = useState<Record<string, SessionInfo>>({});
   const hostKeyQueue = usePromptQueue<HostKeyPrompt, boolean>();
   const credentialQueue = usePromptQueue<CredentialRequest, CredentialAnswer | null>();
 
@@ -80,16 +86,26 @@ function App() {
     closeDialog();
   };
 
+  const handleSessionChange = useCallback((tabId: string, info: SessionInfo) => {
+    setTabSessions((prev) => ({ ...prev, [tabId]: info }));
+  }, []);
+
   const closeTab = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     const newTabs = tabs.filter((t) => t.id !== id);
     setTabs(newTabs);
+    setTabSessions((prev) =>
+      Object.fromEntries(Object.entries(prev).filter(([tabId]) => tabId !== id)),
+    );
     if (activeTab === id && newTabs.length > 0) {
       setActiveTab(newTabs[newTabs.length - 1].id);
     }
   };
 
   const credentialRequest = credentialQueue.current;
+  const activeSession = tabSessions[activeTab];
+  const connectedSessionId =
+    activeSession?.state === "connected" ? activeSession.sessionId : null;
 
   return (
     <div className="flex flex-col h-screen bg-[#1e1e1e] text-[#d4d4d4] select-none">
@@ -118,14 +134,26 @@ function App() {
 
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden">
-        <ServerSidebar
-          servers={servers}
-          loadError={loadError}
-          onConnect={openSession}
-          onAddClick={() => setDialog({ kind: "add-server" })}
-          onEdit={(server) => setDialog({ kind: "edit-server", server })}
-          onDelete={(server) => setDialog({ kind: "delete-server", server })}
-        />
+        <Sidebar view={sidebarView} onViewChange={setSidebarView}>
+          {sidebarView === "servers" && (
+            <ServerSidebar
+              servers={servers}
+              loadError={loadError}
+              onConnect={openSession}
+              onAddClick={() => setDialog({ kind: "add-server" })}
+              onEdit={(server) => setDialog({ kind: "edit-server", server })}
+              onDelete={(server) => setDialog({ kind: "delete-server", server })}
+            />
+          )}
+          {sidebarView === "files" &&
+            (connectedSessionId ? (
+              <RemoteFileTree key={connectedSessionId} sessionId={connectedSessionId} />
+            ) : (
+              <div className="px-4 py-3 text-xs text-gray-500">
+                Select a connected tab to browse its files.
+              </div>
+            ))}
+        </Sidebar>
 
         {/* Terminal Area */}
         <div className="flex-1 relative">
@@ -134,6 +162,7 @@ function App() {
               key={tab.id}
               serverId={tab.serverId}
               prompts={prompts}
+              onSessionChange={(info) => handleSessionChange(tab.id, info)}
               isActive={activeTab === tab.id}
             />
           ))}

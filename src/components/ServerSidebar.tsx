@@ -37,7 +37,7 @@ export function ServerSidebar({
     setCollapsedEnvs((prev) => ({ ...prev, [env]: !prev[env] }));
 
   return (
-    <div className="w-64 bg-[#252526] border-r border-[#3c3c3c] flex flex-col shrink-0 overflow-y-auto">
+    <div className="flex flex-col">
       <div className="flex items-center justify-between p-2 pl-4">
         <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Servers</span>
         <button

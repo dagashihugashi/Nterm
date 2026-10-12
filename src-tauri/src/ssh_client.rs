@@ -11,6 +11,7 @@ use tauri::ipc::Channel as EventChannel;
 
 use crate::codec::TerminalCodec;
 use crate::host_key::{self, HostKeyPrompt};
+use crate::sftp::{SftpClient, SftpRequest};
 use crate::ssh_auth::{self, Credential};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -31,6 +32,8 @@ pub enum SshEvent {
 pub enum SessionCommand {
     Write(String),
     Resize { cols: u32, rows: u32 },
+    /// 同じ SSH セッション上での SFTP 操作
+    Sftp(SftpRequest),
     Disconnect,
 }
 
@@ -150,9 +153,12 @@ fn run_session(
 ) -> Result<(), String> {
     let mut pending_input: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let mut sftp = SftpClient::default();
 
     let result = loop {
-        match drain_commands(session, &mut channel, &codec, commands, &mut pending_input) {
+        let drained =
+            drain_commands(session, &mut channel, &codec, commands, &mut pending_input, &mut sftp);
+        match drained {
             Ok(Flow::Continue) => {}
             Ok(Flow::Stop) => break Ok(()),
             Err(e) => break Err(e),
@@ -178,6 +184,9 @@ fn run_session(
         }
     };
 
+    // SFTP チャネルはセッションを閉じる前に、ブロッキングモードで解放する
+    session.set_blocking(true);
+    drop(sftp);
     close(session, &mut channel);
     result
 }
@@ -188,11 +197,13 @@ fn drain_commands(
     codec: &TerminalCodec,
     commands: &Receiver<SessionCommand>,
     pending_input: &mut Vec<u8>,
+    sftp: &mut SftpClient,
 ) -> Result<Flow, String> {
     loop {
         match commands.try_recv() {
             Ok(SessionCommand::Write(text)) => pending_input.extend(codec.encode(&text)),
             Ok(SessionCommand::Resize { cols, rows }) => resize(session, channel, cols, rows)?,
+            Ok(SessionCommand::Sftp(request)) => sftp.handle(session, request),
             Ok(SessionCommand::Disconnect) | Err(TryRecvError::Disconnected) => {
                 return Ok(Flow::Stop)
             }

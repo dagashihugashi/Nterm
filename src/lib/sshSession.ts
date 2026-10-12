@@ -49,7 +49,13 @@ type SshEvent =
   | { event: 'data'; data: string }
   | { event: 'closed'; data: { reason: string | null } };
 
-type SessionState = 'connecting' | 'connected' | 'closed';
+export type SessionState = 'connecting' | 'connected' | 'closed';
+
+/** セッションの状態変化の通知（SFTP ツリー等、同じセッションを使う機能のため） */
+export interface SessionInfo {
+  sessionId: string;
+  state: SessionState;
+}
 
 const writeNotice = (term: Terminal, color: number, message: string) =>
   term.writeln(`\r\n\x1b[${color}m${message}\x1b[0m`);
@@ -76,10 +82,20 @@ const errorMessage = (error: unknown): string => {
  * - ホスト鍵が未登録・不一致の場合は `confirmHostKey` で確認し、承認されたら登録して再接続する
  * 戻り値の関数を呼ぶとセッションを切断し、購読を解除する（React effect の cleanup 用）。
  */
-export function attachSshSession(term: Terminal, serverId: string, prompts: SessionPrompts): () => void {
+export function attachSshSession(
+  term: Terminal,
+  serverId: string,
+  prompts: SessionPrompts,
+  onSessionChange?: (info: SessionInfo) => void,
+): () => void {
   // 接続ごとに一意なIDを使い、StrictMode の再マウント等で前回のセッションと混線しないようにする
   const sessionId = crypto.randomUUID();
   let state: SessionState = 'connecting';
+  const setState = (next: SessionState) => {
+    if (state === next) return;
+    state = next;
+    onSessionChange?.({ sessionId, state: next });
+  };
   let disposed = false;
   /** 入力された資格情報。null の間は保存済みの値を使う */
   let credential: CredentialAnswer | null = null;
@@ -90,20 +106,28 @@ export function attachSshSession(term: Terminal, serverId: string, prompts: Sess
     );
 
   const fail = (message: string) => {
-    state = 'closed';
+    setState('closed');
     if (!disposed) writeNotice(term, 31, message);
   };
 
-  const onEvent = new Channel<SshEvent>();
-  onEvent.onmessage = (message) => {
-    if (disposed) return;
-    if (message.event === 'data') {
-      term.write(message.data);
-      return;
-    }
-    state = 'closed';
-    const reason = message.data.reason ? `: ${message.data.reason}` : '';
-    writeNotice(term, 33, `[Disconnected${reason}]`);
+  /**
+   * 出力受信用のチャネル。接続を試みるたびに新しく作る。
+   * Rust 側の Channel が破棄される（接続失敗で connect_ssh が終了する）と、
+   * フロント側の受信処理も解除されるため、再接続で使い回すと出力を受け取れなくなる。
+   */
+  const createEventChannel = () => {
+    const onEvent = new Channel<SshEvent>();
+    onEvent.onmessage = (message) => {
+      if (disposed) return;
+      if (message.event === 'data') {
+        term.write(message.data);
+        return;
+      }
+      setState('closed');
+      const reason = message.data.reason ? `: ${message.data.reason}` : '';
+      writeNotice(term, 33, `[Disconnected${reason}]`);
+    };
+    return onEvent;
   };
 
   const askCredential = async (error?: string) => {
@@ -166,14 +190,14 @@ export function attachSshSession(term: Terminal, serverId: string, prompts: Sess
         cols: term.cols,
         rows: term.rows,
       },
-      onEvent,
+      onEvent: createEventChannel(),
     })
       .then((outcome) => {
         if (disposed) {
           void disconnect();
           return;
         }
-        if (state === 'connecting') state = 'connected';
+        if (state === 'connecting') setState('connected');
         if (outcome.warning) writeNotice(term, 33, `Warning: ${outcome.warning}`);
       })
       .catch((error: unknown) => {

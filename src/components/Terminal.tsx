@@ -3,13 +3,15 @@ import { Terminal as XTerm, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
-import { attachSshSession, type SessionPrompts } from '../lib/sshSession';
+import { attachSshSession, type SessionInfo, type SessionPrompts } from '../lib/sshSession';
 
 interface TerminalComponentProps {
   /** 未指定の場合はローカルのモックアップ表示 */
   serverId?: string;
   /** パスワード入力・ホスト鍵確認。参照が変わると再接続されるため、呼び出し側で固定すること */
   prompts: SessionPrompts;
+  /** 接続状態の変化（参照が変わっても再接続しない） */
+  onSessionChange?: (info: SessionInfo) => void;
   isActive: boolean;
 }
 
@@ -60,19 +62,52 @@ function createTerminal(container: HTMLElement): { term: XTerm; fitAddon: FitAdd
   return { term, fitAddon };
 }
 
+const EDITABLE_SELECTOR = 'input, textarea, select, [contenteditable="true"]';
+
+/** ターミナルにフォーカスする。ただし他の入力欄（ダイアログ等）を操作中なら奪わない */
+function focusTerminal(term: XTerm, container: HTMLElement) {
+  const active = document.activeElement;
+  const isEditingElsewhere =
+    active instanceof HTMLElement && !container.contains(active) && active.matches(EDITABLE_SELECTOR);
+  if (!isEditingElsewhere) term.focus();
+}
+
 export const TerminalComponent: React.FC<TerminalComponentProps> = ({
-  serverId, prompts, isActive
+  serverId, prompts, onSessionChange, isActive
 }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<XTerm | null>(null);
+  // 最新の値を参照する（effect の依存に入れると再接続されてしまうため）
+  const onSessionChangeRef = useRef(onSessionChange);
+  const isActiveRef = useRef(isActive);
+  useEffect(() => {
+    onSessionChangeRef.current = onSessionChange;
+    isActiveRef.current = isActive;
+  });
+
+  // タブが表示されたらターミナルにフォーカスする（display: none 解除後に行うため次フレームで）
+  useEffect(() => {
+    const term = termRef.current;
+    const container = terminalRef.current;
+    if (!isActive || !term || !container) return;
+    const frame = window.requestAnimationFrame(() => focusTerminal(term, container));
+    return () => window.cancelAnimationFrame(frame);
+  }, [isActive]);
 
   useEffect(() => {
     const container = terminalRef.current;
     if (!container) return;
 
     const { term, fitAddon } = createTerminal(container);
+    termRef.current = term;
 
+    const handleSessionChange = (info: SessionInfo) => {
+      onSessionChangeRef.current?.(info);
+      // 接続できたらすぐに操作できるよう、表示中のタブならフォーカスする
+      if (info.state === 'connected' && isActiveRef.current) focusTerminal(term, container);
+    };
     const detachSession = serverId
-      ? attachSshSession(term, serverId, prompts)
+      ? attachSshSession(term, serverId, prompts, handleSessionChange)
       : undefined;
     if (!serverId) {
       term.writeln('\x1b[1;32mWelcome to Nterm\x1b[0m');
@@ -93,6 +128,7 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
       resizeObserver.disconnect();
       if (frame !== undefined) window.cancelAnimationFrame(frame);
       detachSession?.();
+      termRef.current = null;
       term.dispose();
     };
   }, [serverId, prompts]);

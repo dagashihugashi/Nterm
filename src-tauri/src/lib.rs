@@ -3,12 +3,14 @@ mod codec;
 mod config;
 mod credentials;
 mod host_key;
+mod sftp;
 mod ssh_auth;
 mod ssh_client;
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use ssh2::{Channel as SshChannel, Session};
@@ -18,6 +20,7 @@ use tauri::{AppHandle, Manager, State};
 use codec::TerminalCodec;
 use config::{add_server, delete_server, load_servers, update_server};
 use host_key::HostKeyPrompt;
+use sftp::{RemoteEntry, SftpRequest};
 use ssh_auth::Credential;
 use ssh_client::{ConnectError, ConnectParams, SessionCommand, SshEvent};
 
@@ -185,6 +188,38 @@ async fn connect_ssh(
     Ok(ConnectOutcome { warning })
 }
 
+/// SFTP 要求の応答待ちの上限（大きなディレクトリの一覧取得を考慮）
+const SFTP_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// セッションスレッドに SFTP 要求を送り、結果を待つ。
+async fn request_sftp<T: Send + 'static>(
+    state: &AppState,
+    session_id: &str,
+    make_request: impl FnOnce(Sender<Result<T, String>>) -> SftpRequest,
+) -> Result<T, String> {
+    let (reply, response) = mpsc::channel();
+    send_command(state, session_id, SessionCommand::Sftp(make_request(reply)))?;
+    tauri::async_runtime::spawn_blocking(move || response.recv_timeout(SFTP_REPLY_TIMEOUT))
+        .await
+        .map_err(|e| format!("SFTP task failed: {e}"))?
+        .map_err(|_| "SFTP request timed out or the session was closed".to_string())?
+}
+
+/// ログインユーザーのホームディレクトリ（ツリーの初期表示位置）
+#[tauri::command]
+async fn sftp_home(state: State<'_, AppState>, session_id: String) -> Result<String, String> {
+    request_sftp(&state, &session_id, |reply| SftpRequest::Home { reply }).await
+}
+
+#[tauri::command]
+async fn sftp_list(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<Vec<RemoteEntry>, String> {
+    request_sftp(&state, &session_id, |reply| SftpRequest::List { path, reply }).await
+}
+
 #[tauri::command]
 fn has_saved_credential(server_id: String) -> Result<bool, String> {
     credentials::has_secret(&credentials::credentials_path()?, &server_id)
@@ -258,6 +293,8 @@ pub fn run() {
             trust_host_key,
             write_ssh,
             resize_ssh,
+            sftp_home,
+            sftp_list,
             disconnect_ssh
         ])
         .run(tauri::generate_context!())
