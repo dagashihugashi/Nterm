@@ -147,19 +147,26 @@ impl LineBuffer {
         (self.cursor..end).for_each(|col| self.clear_cell(col));
     }
 
-    /// 現在の内容を1行の文字列として取り出し、バッファを空にする（行末の空白は除く）
-    fn take_line(&mut self) -> String {
+    /// 現在の内容を1行の文字列にする（行末の空白は除く）
+    fn render(&self) -> String {
         let line: String = self
             .cells
-            .drain(..)
+            .iter()
             .map(|cell| match cell {
-                Cell::Blank => " ".to_string(),
-                Cell::Text(text) => text,
-                Cell::WideTail => String::new(),
+                Cell::Blank => " ",
+                Cell::Text(text) => text.as_str(),
+                Cell::WideTail => "",
             })
             .collect();
-        self.cursor = 0;
         line.trim_end().to_string()
+    }
+
+    /// 現在の内容を1行の文字列として取り出し、バッファを空にする
+    fn take_line(&mut self) -> String {
+        let line = self.render();
+        self.cells.clear();
+        self.cursor = 0;
+        line
     }
 
     fn is_empty(&self) -> bool {
@@ -233,6 +240,11 @@ impl LogFormatter {
     pub fn feed(&mut self, text: &str) -> Vec<String> {
         self.parser.advance(&mut self.performer, text.as_bytes());
         std::mem::take(&mut self.performer.completed)
+    }
+
+    /// 未確定の行（プロンプト等）の現在の内容。確定はしない（プロンプトの検知に使う）。
+    pub fn current_line(&self) -> String {
+        self.performer.line.render()
     }
 
     /// 未確定の行（プロンプト等）を取り出す。ログ停止時に使う。空なら `None`。
@@ -358,6 +370,15 @@ mod tests {
     #[test]
     fn keeps_combining_chars() {
         assert_eq!(lines(&["e\u{301}x\r\n"]), ["e\u{301}x"]);
+    }
+
+    #[test]
+    fn current_line_shows_pending_line_without_completing_it() {
+        let mut formatter = LogFormatter::default();
+        formatter.feed("motd\r\n\x1b[32m[app@web01 ~]$\x1b[0m ");
+        assert_eq!(formatter.current_line(), "[app@web01 ~]$");
+        assert_eq!(formatter.feed("ls\r\n"), ["[app@web01 ~]$ ls"]);
+        assert_eq!(formatter.current_line(), "");
     }
 
     #[test]

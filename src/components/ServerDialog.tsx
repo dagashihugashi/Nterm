@@ -9,6 +9,7 @@ import {
   type ServerInput,
 } from '../types/server';
 import { Dialog, DialogFooter, Field, inputClass } from './Dialog';
+import { SwitchUserFields, type SwitchUserRow } from './SwitchUserFields';
 
 type ServerDialogProps = {
   /** 指定時は編集モード、未指定時は追加モード */
@@ -26,6 +27,7 @@ type FormState = {
   keyFile: string;
   env: string;
   encoding: string;
+  switchUsers: SwitchUserRow[];
 };
 
 const DEFAULT_KEY_FILE = '~/.ssh/id_ed25519';
@@ -40,6 +42,7 @@ const EMPTY_FORM: FormState = {
   keyFile: DEFAULT_KEY_FILE,
   env: '',
   encoding: 'UTF-8',
+  switchUsers: [],
 };
 
 function toForm(server: ServerConfig | undefined): FormState {
@@ -53,6 +56,10 @@ function toForm(server: ServerConfig | undefined): FormState {
     keyFile: server.auth.keyFile ?? DEFAULT_KEY_FILE,
     env: server.env ?? '',
     encoding: server.encoding ?? 'UTF-8',
+    switchUsers: (server.switchUsers ?? []).map((step) => ({
+      user: step.user,
+      command: step.command ?? '',
+    })),
   };
 }
 
@@ -70,6 +77,10 @@ function toInput(form: FormState): ServerInput | string {
     keyFile: form.authType === 'publickey' ? form.keyFile.trim() || null : null,
     env: form.env.trim() || null,
     encoding: form.encoding,
+    switchUsers: form.switchUsers.map((row) => ({
+      user: row.user.trim(),
+      command: row.command.trim() || null,
+    })),
   };
 }
 
@@ -196,6 +207,10 @@ export function ServerDialog({ server, onSaved, onCancel }: ServerDialogProps) {
             </Field>
           </div>
         </div>
+        <SwitchUserFields
+          rows={form.switchUsers}
+          onChange={(switchUsers) => setForm((prev) => ({ ...prev, switchUsers }))}
+        />
         {isEdit && <SavedCredential serverId={server.id} />}
         <DialogFooter submitLabel={isEdit ? 'Save' : 'Add'} isSubmitting={isSaving} error={error} onCancel={onCancel} />
       </form>

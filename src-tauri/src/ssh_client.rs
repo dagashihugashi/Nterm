@@ -3,19 +3,24 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use ssh2::{Channel, Session};
 use tauri::ipc::Channel as EventChannel;
 
 use crate::codec::TerminalCodec;
+use crate::credentials;
 use crate::host_key::{self, HostKeyPrompt};
 use crate::session_log::SessionLog;
 use crate::sftp::{SftpClient, SftpRequest};
 use crate::ssh_auth::{self, Credential};
+use crate::switch_user::{Action as SwitchAction, SwitchUserAutomation, SwitchUserNotice};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// 無通信時の Keepalive 送信間隔（ファイアウォール等による無通信切断を防ぐ）。
+/// settings.json の `ssh.keepaliveIntervalSec` 実装までは固定値。
+const KEEPALIVE_INTERVAL_SECS: u32 = 60;
 const CLOSE_TIMEOUT_MS: u32 = 3_000;
 const READ_BUFFER_SIZE: usize = 16 * 1024;
 const IDLE_SLEEP: Duration = Duration::from_millis(5);
@@ -29,6 +34,8 @@ pub enum SshEvent {
     Closed { reason: Option<String> },
     /// ログの書き込みに失敗し、ログ取得を停止した（接続は継続）
     LogFailed { message: String },
+    /// ログイン後のユーザ切り替えの進行状況
+    SwitchUser(SwitchUserNotice),
 }
 
 /// セッションスレッドへの指示。
@@ -42,7 +49,18 @@ pub enum SessionCommand {
     StopLog,
     /// 文字コードを切り替える（画面表示・入力・ログのすべてに適用）
     SetEncoding(TerminalCodec),
+    /// ユーザ切り替えのパスワード入力の回答（パスワード, 保存するか）。None はキャンセル
+    SwitchUserSecret(Option<(String, bool)>),
     Disconnect,
+}
+
+/// セッション開始時に渡す設定
+pub struct SessionSetup {
+    pub codec: TerminalCodec,
+    /// パスワードの保存先（credentials.json のキー）に使う
+    pub server_id: String,
+    /// ログイン後のユーザ切り替え（設定がなければ None）
+    pub switch_user: Option<SwitchUserAutomation>,
 }
 
 /// 接続失敗の理由。フロントエンドへは `{ kind: "hostKey" | "failed", ... }` として届く。
@@ -102,6 +120,8 @@ pub fn connect(
         .shell()
         .map_err(|e| format!("failed to start shell: {e}"))?;
 
+    // 応答は不要（通信を発生させることが目的。相手が応答しない場合は TCP の送信エラーで切断を検知する）
+    session.set_keepalive(false, KEEPALIVE_INTERVAL_SECS);
     session.set_blocking(false);
     Ok((session, channel))
 }
@@ -128,13 +148,13 @@ fn open_tcp(host: &str, port: u16) -> Result<TcpStream, String> {
 pub fn spawn_session(
     session: Session,
     channel: Channel,
-    codec: TerminalCodec,
+    setup: SessionSetup,
     events: EventChannel<SshEvent>,
     commands: Receiver<SessionCommand>,
     on_exit: impl FnOnce() + Send + 'static,
 ) {
     thread::spawn(move || {
-        let reason = run_session(&session, channel, codec, &events, &commands).err();
+        let reason = run_session(&session, channel, setup, &events, &commands).err();
         // フロントエンド側が既に破棄されている場合は届かなくてよい
         let _ = events.send(SshEvent::Closed { reason });
         on_exit();
@@ -163,23 +183,31 @@ struct SessionLoop<'a> {
     sftp: SftpClient,
     /// 取得中のログ（未取得なら None）
     log: Option<SessionLog>,
+    /// 次に Keepalive の送信を確認する時刻
+    next_keepalive: Instant,
+    server_id: String,
+    /// 実行中のユーザ切り替え（完了・中断したら None）
+    switch_user: Option<SwitchUserAutomation>,
 }
 
 fn run_session(
     session: &Session,
     channel: Channel,
-    codec: TerminalCodec,
+    setup: SessionSetup,
     events: &EventChannel<SshEvent>,
     commands: &Receiver<SessionCommand>,
 ) -> Result<(), String> {
     let mut state = SessionLoop {
         session,
         channel,
-        codec,
+        codec: setup.codec,
         events,
         pending_input: Vec::new(),
         sftp: SftpClient::default(),
         log: None,
+        next_keepalive: Instant::now(),
+        server_id: setup.server_id,
+        switch_user: setup.switch_user,
     };
     let result = state.run(commands);
     state.shutdown();
@@ -204,8 +232,34 @@ impl SessionLoop<'_> {
                 ReadOutcome::Eof => return Ok(()),
                 ReadOutcome::Idle => false,
             };
+            self.send_keepalive()?;
+            self.tick_switch_user();
             if !wrote && !received {
                 thread::sleep(IDLE_SLEEP);
+            }
+        }
+    }
+
+    /// 送信時刻になっていれば Keepalive を送る。
+    /// libssh2 は前回の通信からの経過時間で送信要否を判断し、次の送信までの秒数を返す。
+    fn send_keepalive(&mut self) -> Result<(), String> {
+        if Instant::now() < self.next_keepalive {
+            return Ok(());
+        }
+        match self.session.keepalive_send() {
+            Ok(seconds) => {
+                let wait = Duration::from_secs(u64::from(seconds.max(1)));
+                self.next_keepalive = Instant::now() + wait;
+                Ok(())
+            }
+            Err(e) => {
+                let error = std::io::Error::from(e);
+                // 送信バッファが一杯の場合は次のループで再試行する
+                if error.kind() == ErrorKind::WouldBlock {
+                    Ok(())
+                } else {
+                    Err(format!("connection lost: {error}"))
+                }
             }
         }
     }
@@ -214,7 +268,9 @@ impl SessionLoop<'_> {
         loop {
             match commands.try_recv() {
                 Ok(SessionCommand::Write(text)) => {
-                    self.pending_input.extend(self.codec.encode(&text))
+                    if self.accepts_input(&text) {
+                        self.pending_input.extend(self.codec.encode(&text))
+                    }
                 }
                 Ok(SessionCommand::Resize { cols, rows }) => {
                     resize(self.session, &mut self.channel, cols, rows)?
@@ -228,6 +284,7 @@ impl SessionLoop<'_> {
                 Ok(SessionCommand::StopLog) => self.stop_log(),
                 // 旧デコーダが保持していた途中のマルチバイト文字は破棄される
                 Ok(SessionCommand::SetEncoding(codec)) => self.codec = codec,
+                Ok(SessionCommand::SwitchUserSecret(answer)) => self.provide_switch_secret(answer),
                 Ok(SessionCommand::Disconnect) | Err(TryRecvError::Disconnected) => {
                     return Ok(Flow::Stop)
                 }
@@ -243,10 +300,72 @@ impl SessionLoop<'_> {
             return Flow::Continue;
         }
         self.record(&text);
+        self.feed_switch_user(&text);
         match self.events.send(SshEvent::Data(text)) {
             Ok(()) => Flow::Continue,
             Err(_) => Flow::Stop,
         }
+    }
+
+    /// ユーザ切り替えの実行中は、利用者のキー入力を送らない（自動入力と混ざらないようにする）。
+    /// Ctrl+C は送ったうえで切り替えを中断、Esc は切り替えを中断する。
+    fn accepts_input(&mut self, text: &str) -> bool {
+        let Some(automation) = self.switch_user.as_mut() else {
+            return true;
+        };
+        if text.contains('\x03') {
+            let actions = automation.interrupt();
+            self.apply_switch_actions(actions);
+            return true;
+        }
+        if text == "\x1b" {
+            let actions = automation.cancel();
+            self.apply_switch_actions(actions);
+        }
+        false
+    }
+
+    fn feed_switch_user(&mut self, text: &str) {
+        if let Some(automation) = self.switch_user.as_mut() {
+            let actions = automation.feed(text, Instant::now());
+            self.apply_switch_actions(actions);
+        }
+    }
+
+    fn tick_switch_user(&mut self) {
+        if let Some(automation) = self.switch_user.as_mut() {
+            let actions = automation.tick(Instant::now());
+            self.apply_switch_actions(actions);
+        }
+    }
+
+    fn provide_switch_secret(&mut self, answer: Option<(String, bool)>) {
+        if let Some(automation) = self.switch_user.as_mut() {
+            let actions = automation.provide_secret(answer, Instant::now());
+            self.apply_switch_actions(actions);
+        }
+    }
+
+    fn apply_switch_actions(&mut self, actions: Vec<SwitchAction>) {
+        for action in actions {
+            match action {
+                SwitchAction::Send(text) => self.pending_input.extend(self.codec.encode(&text)),
+                SwitchAction::PersistSecret { user, secret, remember } => {
+                    if let Err(message) = persist_switch_secret(&self.server_id, &user, &secret, remember) {
+                        self.notify_switch(SwitchUserNotice::Warning { message });
+                    }
+                }
+                SwitchAction::Notify(notice) => self.notify_switch(notice),
+            }
+        }
+        if !self.switch_user.as_ref().is_some_and(SwitchUserAutomation::is_active) {
+            self.switch_user = None;
+        }
+    }
+
+    fn notify_switch(&self, notice: SwitchUserNotice) {
+        // フロントエンド側が既に破棄されている場合は届かなくてよい
+        let _ = self.events.send(SshEvent::SwitchUser(notice));
     }
 
     /// ログに書き込む。書き込めなくなった場合はログを止めて通知する（接続は継続する）。
@@ -278,6 +397,23 @@ impl SessionLoop<'_> {
         drop(self.sftp);
         close(self.session, &mut self.channel);
     }
+}
+
+/// 切り替えに成功したパスワードを保存する（remember = false なら保存済みの値を削除する）
+fn persist_switch_secret(
+    server_id: &str,
+    user: &str,
+    secret: &str,
+    remember: bool,
+) -> Result<(), String> {
+    let path = credentials::credentials_path()?;
+    let key = credentials::switch_user_key(server_id, user);
+    let result = if remember {
+        credentials::save_secret(&path, &key, secret)
+    } else {
+        credentials::delete_secret(&path, &key)
+    };
+    result.map_err(|e| format!("the password for {user} could not be saved: {e}"))
 }
 
 /// 未送信の入力を書き込む。WouldBlock の場合は残りを保持して次のループで再送する。

@@ -1,5 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type { Terminal } from '@xterm/xterm';
+import type { StatusMessage } from './terminalClipboard';
 
 /** Rust 側 `ConnectError::HostKey(HostKeyPrompt)` と対応 */
 export interface HostKeyPrompt {
@@ -25,13 +26,35 @@ export interface CredentialAnswer {
   remember: boolean;
 }
 
+/** ログイン後のユーザ切り替え（su 等）のパスワード入力の要求 */
+export interface SwitchSecretRequest {
+  serverId: string;
+  /** 切り替え先のユーザー */
+  user: string;
+  /** 直前の認証失敗の理由（初回入力時は null） */
+  error: string | null;
+}
+
 /** 接続中にユーザーへ問い合わせる処理。参照が変わると再接続されるため、呼び出し側で固定すること */
 export interface SessionPrompts {
   /** true でホスト鍵を信頼して接続を続行 */
   confirmHostKey: (prompt: HostKeyPrompt) => Promise<boolean>;
   /** null でキャンセル */
   requestCredential: (request: CredentialRequest) => Promise<CredentialAnswer | null>;
+  /** null でキャンセル（ユーザ切り替えを中断する） */
+  requestSwitchSecret: (request: SwitchSecretRequest) => Promise<CredentialAnswer | null>;
 }
+
+/** Rust 側 `switch_user::SwitchUserNotice` と対応 */
+type SwitchUserNotice =
+  | { kind: 'switching'; user: string }
+  | { kind: 'secretRequired'; user: string; error: string | null }
+  | { kind: 'switched'; user: string }
+  | { kind: 'authFailed'; user: string; message: string }
+  | { kind: 'failed'; user: string; message: string }
+  | { kind: 'cancelled'; user: string }
+  | { kind: 'finished' }
+  | { kind: 'warning'; message: string };
 
 /** Rust 側 `ConnectError`（hostKey 以外） */
 type ConnectError =
@@ -48,7 +71,8 @@ interface ConnectOutcome {
 type SshEvent =
   | { event: 'data'; data: string }
   | { event: 'closed'; data: { reason: string | null } }
-  | { event: 'logFailed'; data: { message: string } };
+  | { event: 'logFailed'; data: { message: string } }
+  | { event: 'switchUser'; data: SwitchUserNotice };
 
 export type SessionState = 'connecting' | 'connected' | 'closed';
 
@@ -62,6 +86,8 @@ export interface SessionCallbacks {
   onSessionChange?: (info: SessionInfo) => void;
   /** ログの書き込みに失敗し、ログ取得が止まった（接続は継続） */
   onLogFailed?: (message: string) => void;
+  /** ステータスバーに表示する結果（ユーザ切り替えの成否など） */
+  onStatus?: (message: StatusMessage) => void;
 }
 
 const writeNotice = (term: Terminal, color: number, message: string) =>
@@ -135,11 +161,58 @@ export function attachSshSession(
         callbacks.onLogFailed?.(message.data.message);
         return;
       }
+      if (message.event === 'switchUser') {
+        handleSwitchUser(message.data);
+        return;
+      }
       setState('closed');
       const reason = message.data.reason ? `: ${message.data.reason}` : '';
       writeNotice(term, 33, `[Disconnected${reason}]`);
     };
     return onEvent;
+  };
+
+  /** ユーザ切り替えのパスワードを入力してもらい、セッションに渡す（null はキャンセル） */
+  const askSwitchSecret = async (user: string, error: string | null) => {
+    const answer = await prompts.requestSwitchSecret({ serverId, user, error });
+    if (disposed) return;
+    invoke('provide_switch_secret', { sessionId, answer }).catch((reason: unknown) =>
+      writeNotice(term, 31, `[Error: ${errorMessage(reason)}]`),
+    );
+  };
+
+  /** ユーザ切り替えの進行状況。失敗はターミナルとステータスバーの両方に表示する */
+  const handleSwitchUser = (notice: SwitchUserNotice) => {
+    const reportError = (text: string) => {
+      writeNotice(term, 31, `[${text}]`);
+      callbacks.onStatus?.({ kind: 'error', text });
+    };
+    switch (notice.kind) {
+      case 'switching':
+        // 完了までキー入力はリモートへ送られないため、操作できない理由を示す
+        callbacks.onStatus?.({ kind: 'info', text: `Switching to ${notice.user}... (Esc to cancel)` });
+        break;
+      case 'secretRequired':
+        void askSwitchSecret(notice.user, notice.error);
+        break;
+      case 'switched':
+        callbacks.onStatus?.({ kind: 'info', text: `Switched to ${notice.user}` });
+        break;
+      case 'authFailed':
+        reportError(`Switch to ${notice.user} failed: ${notice.message}`);
+        break;
+      case 'failed':
+        reportError(`Switch to ${notice.user} stopped: ${notice.message}`);
+        break;
+      case 'cancelled':
+        writeNotice(term, 33, `[Switch to ${notice.user} cancelled]`);
+        break;
+      case 'warning':
+        writeNotice(term, 33, `Warning: ${notice.message}`);
+        break;
+      case 'finished':
+        break;
+    }
   };
 
   const askCredential = async (error?: string) => {

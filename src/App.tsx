@@ -11,6 +11,7 @@ import { CredentialDialog } from "./components/CredentialDialog";
 import { HostKeyDialog } from "./components/HostKeyDialog";
 import { LogDialog } from "./components/LogDialog";
 import { EncodingMenu } from "./components/EncodingMenu";
+import { SwitchUserDialog } from "./components/SwitchUserDialog";
 import { usePromptQueue } from "./hooks/usePromptQueue";
 import { stopLog } from "./lib/sessionLog";
 import { isEditingText, matchAppShortcut, type AppAction } from "./lib/shortcuts";
@@ -21,6 +22,7 @@ import type {
   HostKeyPrompt,
   SessionInfo,
   SessionPrompts,
+  SwitchSecretRequest,
 } from "./lib/sshSession";
 import type { ServerConfig } from "./types/server";
 import "./App.css";
@@ -73,6 +75,7 @@ function App() {
   const hostKeyQueue = usePromptQueue<HostKeyPrompt, boolean>();
   const credentialQueue = usePromptQueue<CredentialRequest, CredentialAnswer | null>();
   const pasteQueue = usePromptQueue<PasteRequest, boolean>();
+  const switchSecretQueue = usePromptQueue<SwitchSecretRequest, CredentialAnswer | null>();
 
   useEffect(() => {
     if (!status) return;
@@ -82,8 +85,12 @@ function App() {
 
   // 参照が変わると全タブが再接続されるため、安定した ask だけに依存させる
   const prompts = useMemo<SessionPrompts>(
-    () => ({ confirmHostKey: hostKeyQueue.ask, requestCredential: credentialQueue.ask }),
-    [hostKeyQueue.ask, credentialQueue.ask],
+    () => ({
+      confirmHostKey: hostKeyQueue.ask,
+      requestCredential: credentialQueue.ask,
+      requestSwitchSecret: switchSecretQueue.ask,
+    }),
+    [hostKeyQueue.ask, credentialQueue.ask, switchSecretQueue.ask],
   );
 
   useEffect(() => {
@@ -243,7 +250,8 @@ function App() {
       dialog !== null ||
       credentialQueue.current !== undefined ||
       hostKeyQueue.current !== undefined ||
-      pasteQueue.current !== undefined;
+      pasteQueue.current !== undefined ||
+      switchSecretQueue.current !== undefined;
   });
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -401,6 +409,16 @@ function App() {
           error={credentialRequest.error}
           onSubmit={(answer) => credentialQueue.answer(answer)}
           onCancel={() => credentialQueue.answer(null)}
+        />
+      )}
+      {switchSecretQueue.current && (
+        <SwitchUserDialog
+          key={`${switchSecretQueue.current.serverId}:${switchSecretQueue.current.user}:${switchSecretQueue.current.error ?? ""}`}
+          server={servers.find((s) => s.id === switchSecretQueue.current?.serverId)}
+          user={switchSecretQueue.current.user}
+          error={switchSecretQueue.current.error}
+          onSubmit={(answer) => switchSecretQueue.answer(answer)}
+          onCancel={() => switchSecretQueue.answer(null)}
         />
       )}
       {hostKeyQueue.current && (

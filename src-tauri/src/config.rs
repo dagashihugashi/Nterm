@@ -57,6 +57,72 @@ pub struct LogConfig {
     pub filename_pattern: Option<String>,
 }
 
+/// 切り替えコマンドの既定値（`{user}` は切り替え先のユーザー名に置き換える）
+pub const DEFAULT_SWITCH_COMMAND: &str = "su - {user}";
+const MAX_SWITCH_STEPS: usize = 5;
+const MAX_SWITCH_USER_LENGTH: usize = 32;
+const MAX_SWITCH_COMMAND_LENGTH: usize = 200;
+
+/// ログイン後のユーザ切り替え（su 等）の1手順。パスワードは credentials.json に保存する。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchUserStep {
+    pub user: String,
+    /// 省略時は `su - {user}`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+impl SwitchUserStep {
+    /// 送信するコマンド（`{user}` を展開済み）
+    pub fn command_line(&self) -> String {
+        self.command
+            .as_deref()
+            .unwrap_or(DEFAULT_SWITCH_COMMAND)
+            .replace("{user}", &self.user)
+    }
+
+    fn normalized(&self) -> Self {
+        Self {
+            user: self.user.trim().to_string(),
+            command: non_empty(self.command.clone()),
+        }
+    }
+}
+
+/// ユーザー名はコマンドに埋め込むため、シェルで特別な意味を持つ文字を受け付けない
+fn is_valid_user_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_SWITCH_USER_LENGTH
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+fn validate_switch_users(id: &str, steps: &[SwitchUserStep]) -> Result<(), String> {
+    if steps.len() > MAX_SWITCH_STEPS {
+        return Err(format!("server {id}: up to {MAX_SWITCH_STEPS} user switch steps are allowed"));
+    }
+    for step in steps {
+        if !is_valid_user_name(&step.user) {
+            return Err(format!(
+                "server {id}: invalid user name to switch to: \"{}\" (letters, digits, '.', '_' and '-' only)",
+                step.user
+            ));
+        }
+        if let Some(command) = &step.command {
+            if command.trim().is_empty()
+                || command.len() > MAX_SWITCH_COMMAND_LENGTH
+                || command.chars().any(char::is_control)
+            {
+                return Err(format!("server {id}: invalid switch command for {}", step.user));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerConfig {
@@ -71,6 +137,9 @@ pub struct ServerConfig {
     pub encoding: Option<String>,
     pub file_transfer: Option<FileTransferMode>,
     pub log: Option<LogConfig>,
+    /// ログイン後に順に実行するユーザ切り替え
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub switch_users: Vec<SwitchUserStep>,
 }
 
 /// サーバ追加・編集ダイアログからの入力
@@ -85,6 +154,8 @@ pub struct ServerInput {
     pub key_file: Option<String>,
     pub env: Option<String>,
     pub encoding: Option<String>,
+    #[serde(default)]
+    pub switch_users: Vec<SwitchUserStep>,
 }
 
 impl ServerInput {
@@ -105,6 +176,7 @@ impl ServerInput {
             encoding: None,
             file_transfer: None,
             log: None,
+            switch_users: Vec::new(),
         };
         self.apply_to(base)
     }
@@ -123,6 +195,7 @@ impl ServerInput {
             },
             env: non_empty(self.env),
             encoding: non_empty(self.encoding),
+            switch_users: self.switch_users.iter().map(SwitchUserStep::normalized).collect(),
             ..base
         }
     }
@@ -201,7 +274,7 @@ fn validate_server(server: &ServerConfig) -> Result<(), String> {
     if let Some(encoding) = &server.encoding {
         TerminalCodec::new(Some(encoding)).map_err(|e| format!("server {id}: {e}"))?;
     }
-    Ok(())
+    validate_switch_users(id, &server.switch_users)
 }
 
 /// 既存の一覧に新しいサーバを加えた一覧を返す（元の一覧は変更しない）。
@@ -319,20 +392,38 @@ pub fn add_server(server: ServerInput) -> Result<ServerConfig, String> {
         .ok_or_else(|| "failed to add server".to_string())
 }
 
-#[tauri::command]
-pub fn update_server(id: String, server: ServerInput) -> Result<ServerConfig, String> {
-    let updated = modify_servers(|servers| replace_server(servers, &id, server))?;
-    updated
-        .into_iter()
-        .find(|s| s.id == id)
-        .ok_or_else(|| format!("server not found: {id}"))
+/// 手順から外れた切り替え先ユーザー（保存済みパスワードを削除する対象）
+fn removed_switch_users(before: &[SwitchUserStep], after: &[SwitchUserStep]) -> Vec<String> {
+    before
+        .iter()
+        .filter(|old| !after.iter().any(|new| new.user == old.user))
+        .map(|old| old.user.clone())
+        .collect()
 }
 
-/// サーバを削除し、保存済みパスワードも合わせて削除する（known_hosts は他サーバと共有し得るため残す）。
+#[tauri::command]
+pub fn update_server(id: String, server: ServerInput) -> Result<ServerConfig, String> {
+    let previous = find_server(&id)?;
+    let updated = modify_servers(|servers| replace_server(servers, &id, server))?;
+    let saved = updated
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or_else(|| format!("server not found: {id}"))?;
+    let path = credentials::credentials_path()?;
+    for user in removed_switch_users(&previous.switch_users, &saved.switch_users) {
+        credentials::delete_secret(&path, &credentials::switch_user_key(&id, &user)).map_err(|e| {
+            format!("server was saved, but the saved password for {user} could not be removed: {e}")
+        })?;
+    }
+    Ok(saved)
+}
+
+/// サーバを削除し、保存済みパスワード（ユーザ切り替え用を含む）も合わせて削除する
+/// （known_hosts は他サーバと共有し得るため残す）。
 #[tauri::command]
 pub fn delete_server(id: String) -> Result<(), String> {
     modify_servers(|servers| remove_server(servers, &id))?;
-    credentials::delete_secret(&credentials::credentials_path()?, &id)
+    credentials::delete_server_secrets(&credentials::credentials_path()?, &id)
         .map_err(|e| format!("server was deleted, but its saved password could not be removed: {e}"))
 }
 
@@ -438,7 +529,68 @@ mod tests {
             key_file: None,
             env: Some("  ".to_string()),
             encoding: Some("Shift_JIS".to_string()),
+            switch_users: Vec::new(),
         }
+    }
+
+    fn switch_step(user: &str, command: Option<&str>) -> SwitchUserStep {
+        SwitchUserStep { user: user.to_string(), command: command.map(str::to_string) }
+    }
+
+    #[test]
+    fn parses_switch_users_and_expands_default_command() {
+        let json = with_server(
+            r#""switchUsers": [{ "user": "app2" }, { "user": "oracle", "command": "sudo -iu {user}" }]"#,
+        );
+        let server = &parse_servers(&json).unwrap()[0];
+        assert_eq!(server.switch_users[0].command_line(), "su - app2");
+        assert_eq!(server.switch_users[1].command_line(), "sudo -iu oracle");
+    }
+
+    #[test]
+    fn switch_users_are_omitted_from_json_when_empty() {
+        let server = parse_servers(MINIMAL).unwrap().remove(0);
+        assert!(server.switch_users.is_empty());
+        assert!(!serde_json::to_string(&server).unwrap().contains("switchUsers"));
+    }
+
+    #[test]
+    fn rejects_user_names_that_could_inject_commands() {
+        for user in ["oracle; rm -rf ~", "a b", "$(id)", "-c", ""] {
+            let json = with_server(&format!(r#""switchUsers": [{{ "user": "{user}" }}]"#));
+            assert!(parse_servers(&json).is_err(), "accepted {user:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_switch_command_with_line_break() {
+        let json = with_server(r#""switchUsers": [{ "user": "oracle", "command": "su - {user}\nid" }]"#);
+        assert!(parse_servers(&json).is_err());
+    }
+
+    #[test]
+    fn rejects_too_many_switch_steps() {
+        let steps = [r#"{ "user": "a" }"#; MAX_SWITCH_STEPS + 1].join(",");
+        let json = with_server(&format!(r#""switchUsers": [{steps}]"#));
+        assert!(parse_servers(&json).unwrap_err().contains("up to"));
+    }
+
+    #[test]
+    fn replace_server_normalizes_switch_users() {
+        let original = parse_servers(MINIMAL).unwrap();
+        let input = ServerInput {
+            switch_users: vec![switch_step(" oracle ", Some("  "))],
+            ..new_server("Web01")
+        };
+        let updated = replace_server(&original, "srv-001", input).unwrap();
+        assert_eq!(updated[0].switch_users, [switch_step("oracle", None)]);
+    }
+
+    #[test]
+    fn finds_switch_users_removed_by_edit() {
+        let before = [switch_step("app2", None), switch_step("oracle", None)];
+        let after = [switch_step("oracle", Some("sudo -iu {user}"))];
+        assert_eq!(removed_switch_users(&before, &after), ["app2"]);
     }
 
     #[test]

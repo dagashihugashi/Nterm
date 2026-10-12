@@ -25,8 +25,18 @@ struct StoredCredential {
     secret: String,
 }
 
-/// キーは servers.json のサーバ `id`
+/// キーは servers.json のサーバ `id`（ログイン用）または `switch_user_key` の値（ユーザ切り替え用）
 type CredentialFile = BTreeMap<String, StoredCredential>;
+
+/// ユーザ切り替え（su 等）のパスワードのキー
+pub fn switch_user_key(server_id: &str, user: &str) -> String {
+    format!("{server_id}#su:{user}")
+}
+
+/// サーバに属するキー（ログイン用・ユーザ切り替え用）か
+fn belongs_to_server(key: &str, server_id: &str) -> bool {
+    key == server_id || key.starts_with(&format!("{server_id}#"))
+}
 
 pub fn credentials_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join(CREDENTIALS_FILE))
@@ -68,6 +78,16 @@ pub fn delete_secret(path: &Path, server_id: &str) -> Result<(), String> {
     }
     update_file(path, |credentials| {
         credentials.remove(server_id);
+    })
+}
+
+/// サーバの保存済みパスワード（ログイン用・ユーザ切り替え用）をすべて削除する
+pub fn delete_server_secrets(path: &Path, server_id: &str) -> Result<(), String> {
+    if !read_file(path)?.keys().any(|key| belongs_to_server(key, server_id)) {
+        return Ok(());
+    }
+    update_file(path, |credentials| {
+        credentials.retain(|key, _| !belongs_to_server(key, server_id));
     })
 }
 
@@ -245,6 +265,22 @@ mod tests {
         let loaded = load_secret(&path, "srv-001");
         cleanup(&path);
         assert_eq!(loaded.unwrap().as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn deletes_login_and_switch_user_secrets_of_server_only() {
+        let path = temp_path("server-secrets");
+        save_secret(&path, "srv-1", "login").unwrap();
+        save_secret(&path, &switch_user_key("srv-1", "oracle"), "su").unwrap();
+        save_secret(&path, "srv-10", "other").unwrap();
+        delete_server_secrets(&path, "srv-1").unwrap();
+        let login = has_secret(&path, "srv-1");
+        let su = has_secret(&path, &switch_user_key("srv-1", "oracle"));
+        let other = has_secret(&path, "srv-10");
+        cleanup(&path);
+        assert!(!login.unwrap());
+        assert!(!su.unwrap());
+        assert!(other.unwrap());
     }
 
     #[test]

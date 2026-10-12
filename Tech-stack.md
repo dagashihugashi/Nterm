@@ -55,6 +55,7 @@
 | `fileTransfer` | `"auto"`（既定） / `"sftp"` / `"scp"` | `auto` はSFTPを試し、使えなければファイル転送のみSCPにフォールバック。 |
 | `log.dir` | 文字列 | ログ保存先の既定値。省略時は全体設定の値。 |
 | `log.mode` | `"append"` / `"overwrite"` | 同名ファイルが存在する場合に追記するか上書きするか。 |
+| `switchUsers` | `[{ "user": "oracle", "command": "su - {user}" }]` / 省略可 | ログイン後に順に実行するユーザ切り替え（最大5つ）。`command` 省略時は `su - {user}`。パスワードは `credentials.json` に `{id}#su:{user}` のキーで保存する。 |
 | `log.filenamePattern` | 文字列 | ログ開始ダイアログに表示する既定ファイル名。使える置換文字列は `{env}` `{name}` `{host}` `{user}` `{YYYYMMDD}` `{HHmmss}`。接続ごとに分けたい場合は `{HHmmss}` 等を含める。 |
 
 * ログは自動開始しない。ステータスバーの「Start logging...」（または `Alt+L`）→ ダイアログ → 「Start」で開始する（`log` はダイアログの初期値）。
@@ -109,6 +110,7 @@
 ```
 
 * キーは `servers.json` の `id`。`secret` はパスワード（`password` / `keyboard-interactive`）またはパスフレーズ（`publickey`）。
+* ログイン後のユーザ切り替え（su 等）のパスワードは `{id}#su:{切り替え先ユーザー名}` のキーで保存する。サーバ削除時はまとめて削除し、編集で手順から外したユーザーの分も削除する。
 * DPAPIで暗号化されているため、別PC・別ユーザでは復号できない（持ち運び対象外、Git管理対象外）。
 * 暗号化時にアプリ固有の追加エントロピーを付与し、同じWindowsユーザーで動く他アプリがDPAPIで復号しても値を取り出せないようにする。
 * **保存・削除のタイミング**:

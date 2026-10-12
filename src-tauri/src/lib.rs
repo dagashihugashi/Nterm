@@ -9,11 +9,12 @@ mod session_log;
 mod sftp;
 mod ssh_auth;
 mod ssh_client;
+mod switch_user;
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use ssh2::{Channel as SshChannel, Session};
@@ -21,12 +22,13 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
 use codec::TerminalCodec;
-use config::{add_server, delete_server, load_servers, update_server, LogMode};
+use config::{add_server, delete_server, load_servers, update_server, LogMode, SwitchUserStep};
 use host_key::HostKeyPrompt;
 use session_log::{LogDefaults, SessionLog};
 use sftp::{RemoteEntry, SftpRequest};
 use ssh_auth::Credential;
-use ssh_client::{ConnectError, ConnectParams, SessionCommand, SshEvent};
+use ssh_client::{ConnectError, ConnectParams, SessionCommand, SessionSetup, SshEvent};
+use switch_user::{SwitchStep, SwitchUserAutomation};
 
 type SessionMap = HashMap<String, Sender<SessionCommand>>;
 /// ユーザーの確認待ちのホスト鍵（キーは known_hosts のホスト名表記）
@@ -112,14 +114,40 @@ impl SecretSource {
     }
 }
 
-/// servers.json の設定と入力された資格情報から、接続パラメータと文字コード変換器を用意する。
+struct PreparedConnection {
+    params: ConnectParams,
+    codec: TerminalCodec,
+    switch_steps: Vec<SwitchStep>,
+}
+
+/// ユーザ切り替えの手順に、保存済みのパスワード（あれば）を添える
+fn load_switch_steps(server_id: &str, steps: &[SwitchUserStep]) -> Result<Vec<SwitchStep>, String> {
+    if steps.is_empty() {
+        return Ok(Vec::new());
+    }
+    let path = credentials::credentials_path()?;
+    steps
+        .iter()
+        .map(|step| {
+            let key = credentials::switch_user_key(server_id, &step.user);
+            Ok(SwitchStep {
+                user: step.user.clone(),
+                command: step.command_line(),
+                saved_secret: credentials::load_secret(&path, &key)?,
+            })
+        })
+        .collect()
+}
+
+/// servers.json の設定と入力された資格情報から、接続パラメータ・文字コード変換器・ユーザ切り替え手順を用意する。
 fn prepare_connection(
     server_id: &str,
     secret: String,
     cols: u32,
     rows: u32,
-) -> Result<(ConnectParams, TerminalCodec), String> {
+) -> Result<PreparedConnection, String> {
     let server = config::find_server(server_id)?;
+    let switch_steps = load_switch_steps(server_id, &server.switch_users)?;
     let credential = ssh_auth::build_credential(
         &server.auth,
         secret,
@@ -139,7 +167,7 @@ fn prepare_connection(
         cols,
         rows,
     };
-    Ok((params, codec))
+    Ok(PreparedConnection { params, codec, switch_steps })
 }
 
 /// 接続処理（ブロッキング）を専用スレッドで実行する。
@@ -175,10 +203,16 @@ async fn connect_ssh(
         return Err(format!("session already exists: {session_id}").into());
     }
     let source = SecretSource::resolve(&server_id, secret, remember)?;
-    let (params, codec) = prepare_connection(&server_id, source.secret(), cols, rows)?;
+    let PreparedConnection { params, codec, switch_steps } =
+        prepare_connection(&server_id, source.secret(), cols, rows)?;
     let (session, channel) = establish(&state, params).await?;
     // 認証に成功した値だけを保存する（誤ったパスワードは保存しない）
     let warning = source.persist(&server_id);
+    let setup = SessionSetup {
+        codec,
+        server_id,
+        switch_user: SwitchUserAutomation::new(switch_steps, Instant::now()),
+    };
 
     let (sender, commands) = mpsc::channel();
     state.sessions()?.insert(session_id.clone(), sender);
@@ -188,8 +222,28 @@ async fn connect_ssh(
             sessions.remove(&session_id);
         }
     };
-    ssh_client::spawn_session(session, channel, codec, on_event, commands, on_exit);
+    ssh_client::spawn_session(session, channel, setup, on_event, commands, on_exit);
     Ok(ConnectOutcome { warning })
+}
+
+/// ユーザ切り替えのパスワード入力ダイアログの回答
+#[derive(Deserialize)]
+struct SwitchSecretAnswer {
+    secret: String,
+    /// 切り替えに成功したら保存する（false の場合は保存済みの値を削除する）
+    #[serde(default)]
+    remember: bool,
+}
+
+/// `answer` が null の場合はキャンセル（切り替えを中断する）
+#[tauri::command]
+fn provide_switch_secret(
+    state: State<'_, AppState>,
+    session_id: String,
+    answer: Option<SwitchSecretAnswer>,
+) -> Result<(), String> {
+    let answer = answer.map(|a| (a.secret, a.remember));
+    send_command(&state, &session_id, SessionCommand::SwitchUserSecret(answer))
 }
 
 /// SFTP 要求の応答待ちの上限（大きなディレクトリの一覧取得を考慮）
@@ -369,6 +423,7 @@ pub fn run() {
             clipboard_read,
             clipboard_write,
             set_encoding,
+            provide_switch_secret,
             disconnect_ssh
         ])
         .run(tauri::generate_context!())

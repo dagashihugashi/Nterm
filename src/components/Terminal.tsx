@@ -131,6 +131,7 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
       ? attachSshSession(term, serverId, prompts, {
           onSessionChange: handleSessionChange,
           onLogFailed: (message) => onLogFailedRef.current?.(message),
+          onStatus: (message) => clipboardHandlersRef.current.onStatus(message),
         })
       : undefined;
     if (!serverId) {
