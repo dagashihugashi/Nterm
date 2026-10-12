@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { attachSshSession, type SessionInfo, type SessionPrompts } from '../lib/sshSession';
+import { isToggleLogShortcut } from '../lib/sessionLog';
 
 interface TerminalComponentProps {
   /** 未指定の場合はローカルのモックアップ表示 */
@@ -12,6 +13,8 @@ interface TerminalComponentProps {
   prompts: SessionPrompts;
   /** 接続状態の変化（参照が変わっても再接続しない） */
   onSessionChange?: (info: SessionInfo) => void;
+  /** ログの書き込みに失敗し、ログ取得が止まった（参照が変わっても再接続しない） */
+  onLogFailed?: (message: string) => void;
   isActive: boolean;
 }
 
@@ -49,6 +52,8 @@ function createTerminal(container: HTMLElement): { term: XTerm; fitAddon: FitAdd
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.open(container);
+  // アプリのショートカットはリモートへ送らない（イベント自体は window へ伝わり、App が処理する）
+  term.attachCustomKeyEventHandler((event) => !isToggleLogShortcut(event));
 
   try {
     const webglAddon = new WebglAddon();
@@ -73,15 +78,17 @@ function focusTerminal(term: XTerm, container: HTMLElement) {
 }
 
 export const TerminalComponent: React.FC<TerminalComponentProps> = ({
-  serverId, prompts, onSessionChange, isActive
+  serverId, prompts, onSessionChange, onLogFailed, isActive
 }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   // 最新の値を参照する（effect の依存に入れると再接続されてしまうため）
   const onSessionChangeRef = useRef(onSessionChange);
+  const onLogFailedRef = useRef(onLogFailed);
   const isActiveRef = useRef(isActive);
   useEffect(() => {
     onSessionChangeRef.current = onSessionChange;
+    onLogFailedRef.current = onLogFailed;
     isActiveRef.current = isActive;
   });
 
@@ -107,7 +114,10 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
       if (info.state === 'connected' && isActiveRef.current) focusTerminal(term, container);
     };
     const detachSession = serverId
-      ? attachSshSession(term, serverId, prompts, handleSessionChange)
+      ? attachSshSession(term, serverId, prompts, {
+          onSessionChange: handleSessionChange,
+          onLogFailed: (message) => onLogFailedRef.current?.(message),
+        })
       : undefined;
     if (!serverId) {
       term.writeln('\x1b[1;32mWelcome to Nterm\x1b[0m');

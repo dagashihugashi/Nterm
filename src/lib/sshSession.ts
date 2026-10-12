@@ -47,14 +47,21 @@ interface ConnectOutcome {
 /** Rust 側 `SshEvent` と対応 */
 type SshEvent =
   | { event: 'data'; data: string }
-  | { event: 'closed'; data: { reason: string | null } };
+  | { event: 'closed'; data: { reason: string | null } }
+  | { event: 'logFailed'; data: { message: string } };
 
 export type SessionState = 'connecting' | 'connected' | 'closed';
 
-/** セッションの状態変化の通知（SFTP ツリー等、同じセッションを使う機能のため） */
+/** セッションの状態変化の通知（SFTP ツリー・ログ等、同じセッションを使う機能のため） */
 export interface SessionInfo {
   sessionId: string;
   state: SessionState;
+}
+
+export interface SessionCallbacks {
+  onSessionChange?: (info: SessionInfo) => void;
+  /** ログの書き込みに失敗し、ログ取得が止まった（接続は継続） */
+  onLogFailed?: (message: string) => void;
 }
 
 const writeNotice = (term: Terminal, color: number, message: string) =>
@@ -86,7 +93,7 @@ export function attachSshSession(
   term: Terminal,
   serverId: string,
   prompts: SessionPrompts,
-  onSessionChange?: (info: SessionInfo) => void,
+  callbacks: SessionCallbacks = {},
 ): () => void {
   // 接続ごとに一意なIDを使い、StrictMode の再マウント等で前回のセッションと混線しないようにする
   const sessionId = crypto.randomUUID();
@@ -94,7 +101,7 @@ export function attachSshSession(
   const setState = (next: SessionState) => {
     if (state === next) return;
     state = next;
-    onSessionChange?.({ sessionId, state: next });
+    callbacks.onSessionChange?.({ sessionId, state: next });
   };
   let disposed = false;
   /** 入力された資格情報。null の間は保存済みの値を使う */
@@ -121,6 +128,11 @@ export function attachSshSession(
       if (disposed) return;
       if (message.event === 'data') {
         term.write(message.data);
+        return;
+      }
+      if (message.event === 'logFailed') {
+        writeNotice(term, 31, `[Logging stopped: ${message.data.message}]`);
+        callbacks.onLogFailed?.(message.data.message);
         return;
       }
       setState('closed');

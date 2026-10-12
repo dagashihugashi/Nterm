@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Server, X } from "lucide-react";
 import { TerminalComponent } from "./components/Terminal";
@@ -9,7 +9,9 @@ import { ServerDialog } from "./components/ServerDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { CredentialDialog } from "./components/CredentialDialog";
 import { HostKeyDialog } from "./components/HostKeyDialog";
+import { LogDialog } from "./components/LogDialog";
 import { usePromptQueue } from "./hooks/usePromptQueue";
+import { isToggleLogShortcut, stopLog } from "./lib/sessionLog";
 import type {
   CredentialAnswer,
   CredentialRequest,
@@ -31,9 +33,20 @@ type DialogState =
   | { kind: "add-server" }
   | { kind: "edit-server"; server: ServerConfig }
   | { kind: "delete-server"; server: ServerConfig }
+  | { kind: "start-log"; tabId: string }
   | null;
 
 const MOCKUP_TAB: Tab = { id: "mockup", title: "Local Mockup" };
+
+/** 指定キーを除いた新しいオブジェクトを返す */
+const omitKey = <T,>(record: Record<string, T>, key: string): Record<string, T> =>
+  Object.fromEntries(Object.entries(record).filter(([k]) => k !== key));
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** 指定タブのログ開始ダイアログを閉じる（タブを閉じた・切断された場合） */
+const withoutLogDialogFor = (tabId: string) => (prev: DialogState): DialogState =>
+  prev?.kind === "start-log" && prev.tabId === tabId ? null : prev;
 
 function App() {
   const [tabs, setTabs] = useState<Tab[]>([MOCKUP_TAB]);
@@ -44,6 +57,10 @@ function App() {
   const [sidebarView, setSidebarView] = useState<SidebarView>("servers");
   /** タブIDごとの SSH セッション（Files ビューで現在のタブのセッションを使う） */
   const [tabSessions, setTabSessions] = useState<Record<string, SessionInfo>>({});
+  /** ログ取得中のタブIDと書き込み先のパス */
+  const [tabLogs, setTabLogs] = useState<Record<string, string>>({});
+  /** ステータスバーに表示する直近のエラー */
+  const [statusError, setStatusError] = useState<string | null>(null);
   const hostKeyQueue = usePromptQueue<HostKeyPrompt, boolean>();
   const credentialQueue = usePromptQueue<CredentialRequest, CredentialAnswer | null>();
 
@@ -88,15 +105,24 @@ function App() {
 
   const handleSessionChange = useCallback((tabId: string, info: SessionInfo) => {
     setTabSessions((prev) => ({ ...prev, [tabId]: info }));
+    // 切断時はセッション側でログも閉じられる
+    if (info.state === "closed") {
+      setTabLogs((prev) => omitKey(prev, tabId));
+      setDialog(withoutLogDialogFor(tabId));
+    }
+  }, []);
+
+  const handleLogFailed = useCallback((tabId: string) => {
+    setTabLogs((prev) => omitKey(prev, tabId));
   }, []);
 
   const closeTab = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     const newTabs = tabs.filter((t) => t.id !== id);
     setTabs(newTabs);
-    setTabSessions((prev) =>
-      Object.fromEntries(Object.entries(prev).filter(([tabId]) => tabId !== id)),
-    );
+    setTabSessions((prev) => omitKey(prev, id));
+    setTabLogs((prev) => omitKey(prev, id));
+    setDialog(withoutLogDialogFor(id));
     if (activeTab === id && newTabs.length > 0) {
       setActiveTab(newTabs[newTabs.length - 1].id);
     }
@@ -106,6 +132,42 @@ function App() {
   const activeSession = tabSessions[activeTab];
   const connectedSessionId =
     activeSession?.state === "connected" ? activeSession.sessionId : null;
+  const activeLogPath = tabLogs[activeTab];
+
+  /** 表示中のタブのログ取得を開始（ダイアログを開く）／停止する */
+  const toggleLog = () => {
+    if (!connectedSessionId) return;
+    if (!activeLogPath) {
+      setDialog({ kind: "start-log", tabId: activeTab });
+      return;
+    }
+    const tabId = activeTab;
+    stopLog(connectedSessionId)
+      .then(() => setStatusError(null))
+      .catch((error: unknown) => setStatusError(`Failed to stop logging: ${errorText(error)}`))
+      .finally(() => setTabLogs((prev) => omitKey(prev, tabId)));
+  };
+
+  // Alt+L（ダイアログ表示中は無効）。毎回のレンダーで最新の toggleLog を参照する
+  const toggleLogRef = useRef(toggleLog);
+  const isDialogOpenRef = useRef(false);
+  useEffect(() => {
+    toggleLogRef.current = toggleLog;
+    isDialogOpenRef.current =
+      dialog !== null || credentialQueue.current !== null || hostKeyQueue.current !== null;
+  });
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!isToggleLogShortcut(event) || isDialogOpenRef.current) return;
+      event.preventDefault();
+      toggleLogRef.current();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const logDialogTab = dialog?.kind === "start-log" ? tabs.find((t) => t.id === dialog.tabId) : undefined;
+  const logDialogSession = logDialogTab ? tabSessions[logDialogTab.id] : undefined;
 
   return (
     <div className="flex flex-col h-screen bg-[#1e1e1e] text-[#d4d4d4] select-none">
@@ -123,6 +185,11 @@ function App() {
           >
             <Server size={14} className={activeTab === tab.id ? "text-[#007acc] shrink-0" : "text-gray-500 shrink-0"} />
             <span className="truncate flex-1">{tab.title}</span>
+            {tabLogs[tab.id] && (
+              <span className="text-[10px] font-bold text-[#f14c4c] shrink-0" title={tabLogs[tab.id]}>
+                ● REC
+              </span>
+            )}
             <X
               size={14}
               className={`hover:bg-[#444] rounded shrink-0 ${activeTab === tab.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
@@ -163,6 +230,7 @@ function App() {
               serverId={tab.serverId}
               prompts={prompts}
               onSessionChange={(info) => handleSessionChange(tab.id, info)}
+              onLogFailed={() => handleLogFailed(tab.id)}
               isActive={activeTab === tab.id}
             />
           ))}
@@ -171,8 +239,26 @@ function App() {
 
       {/* Status Bar */}
       <div className="h-6 bg-[#007acc] flex items-center px-3 text-xs text-white gap-4 shrink-0">
-        <span>Ready</span>
-        <span className="ml-auto">UTF-8</span>
+        {activeLogPath ? (
+          <span className="truncate select-text" title={activeLogPath}>
+            <span className="font-bold text-[#ffd2d2]">● REC</span> {activeLogPath}
+          </span>
+        ) : (
+          <span className="truncate">{statusError ?? "Ready"}</span>
+        )}
+        <span className="ml-auto flex items-center gap-4 shrink-0">
+          {connectedSessionId && (
+            <button
+              type="button"
+              onClick={toggleLog}
+              title="Alt+L"
+              className="px-2 rounded hover:bg-white/20"
+            >
+              {activeLogPath ? "Stop logging" : "Start logging..."}
+            </button>
+          )}
+          <span>UTF-8</span>
+        </span>
       </div>
 
       {dialog?.kind === "add-server" && (
@@ -192,6 +278,19 @@ function App() {
           Delete <span className="font-semibold text-white">{dialog.server.name}</span>
           {" "}({dialog.server.user}@{dialog.server.host})? Its saved password will also be removed.
         </ConfirmDialog>
+      )}
+      {logDialogTab?.serverId && logDialogSession?.state === "connected" && (
+        <LogDialog
+          serverId={logDialogTab.serverId}
+          sessionId={logDialogSession.sessionId}
+          title={logDialogTab.title}
+          onStarted={(path) => {
+            setTabLogs((prev) => ({ ...prev, [logDialogTab.id]: path }));
+            setStatusError(null);
+            closeDialog();
+          }}
+          onCancel={closeDialog}
+        />
       )}
       {credentialRequest && (
         <CredentialDialog

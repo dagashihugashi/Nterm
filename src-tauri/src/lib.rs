@@ -3,6 +3,8 @@ mod codec;
 mod config;
 mod credentials;
 mod host_key;
+mod log_formatter;
+mod session_log;
 mod sftp;
 mod ssh_auth;
 mod ssh_client;
@@ -18,8 +20,9 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
 use codec::TerminalCodec;
-use config::{add_server, delete_server, load_servers, update_server};
+use config::{add_server, delete_server, load_servers, update_server, LogMode};
 use host_key::HostKeyPrompt;
+use session_log::{LogDefaults, SessionLog};
 use sftp::{RemoteEntry, SftpRequest};
 use ssh_auth::Credential;
 use ssh_client::{ConnectError, ConnectParams, SessionCommand, SshEvent};
@@ -220,6 +223,38 @@ async fn sftp_list(
     request_sftp(&state, &session_id, |reply| SftpRequest::List { path, reply }).await
 }
 
+/// ログ開始ダイアログの初期値（servers.json の `log`、未指定ならアプリ内蔵の既定値）
+#[tauri::command]
+fn log_defaults(server_id: String) -> Result<LogDefaults, String> {
+    let server = config::find_server(&server_id)?;
+    Ok(session_log::defaults_for(
+        &server,
+        &config::config_dir()?,
+        chrono::Local::now().naive_local(),
+    ))
+}
+
+/// ログファイルを開いてログ取得を開始する。ファイルを開けない場合はここでエラーを返す。
+/// 戻り値は書き込み先のフルパス。
+#[tauri::command]
+fn start_log(
+    state: State<'_, AppState>,
+    session_id: String,
+    dir: String,
+    file_name: String,
+    mode: LogMode,
+) -> Result<String, String> {
+    let path = session_log::prepare_log_path(&dir, &file_name, &config::config_dir()?)?;
+    let log = SessionLog::open(&path, mode)?;
+    send_command(&state, &session_id, SessionCommand::StartLog(Box::new(log)))?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+fn stop_log(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    send_command(&state, &session_id, SessionCommand::StopLog)
+}
+
 #[tauri::command]
 fn has_saved_credential(server_id: String) -> Result<bool, String> {
     credentials::has_secret(&credentials::credentials_path()?, &server_id)
@@ -281,6 +316,7 @@ fn send_command(state: &AppState, session_id: &str, command: SessionCommand) -> 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             load_servers,
@@ -295,6 +331,9 @@ pub fn run() {
             resize_ssh,
             sftp_home,
             sftp_list,
+            log_defaults,
+            start_log,
+            stop_log,
             disconnect_ssh
         ])
         .run(tauri::generate_context!())
