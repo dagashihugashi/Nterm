@@ -31,6 +31,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 encoding_rs = "0.8.42"
 windows = { version = "0.62.2", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
 tauri-plugin-dialog = "2"
+clipboard-win = "5"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

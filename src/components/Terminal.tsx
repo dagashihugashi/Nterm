@@ -4,7 +4,8 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { attachSshSession, type SessionInfo, type SessionPrompts } from '../lib/sshSession';
-import { isToggleLogShortcut } from '../lib/sessionLog';
+import { matchAppShortcut } from '../lib/shortcuts';
+import { attachClipboard, type PasteRequest, type StatusMessage } from '../lib/terminalClipboard';
 
 interface TerminalComponentProps {
   /** 未指定の場合はローカルのモックアップ表示 */
@@ -15,7 +16,13 @@ interface TerminalComponentProps {
   onSessionChange?: (info: SessionInfo) => void;
   /** ログの書き込みに失敗し、ログ取得が止まった（参照が変わっても再接続しない） */
   onLogFailed?: (message: string) => void;
+  /** コピー・貼り付けの結果（ステータスバー表示用） */
+  onStatus: (message: StatusMessage) => void;
+  /** 複数行の貼り付けの確認。true で貼り付ける */
+  confirmPaste: (request: PasteRequest) => Promise<boolean>;
   isActive: boolean;
+  /** 値が変わると（表示中なら）ターミナルにフォーカスを戻す（タブ名の編集後など） */
+  focusToken: number;
 }
 
 const DEFAULT_THEME: ITheme = {
@@ -52,8 +59,6 @@ function createTerminal(container: HTMLElement): { term: XTerm; fitAddon: FitAdd
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.open(container);
-  // アプリのショートカットはリモートへ送らない（イベント自体は window へ伝わり、App が処理する）
-  term.attachCustomKeyEventHandler((event) => !isToggleLogShortcut(event));
 
   try {
     const webglAddon = new WebglAddon();
@@ -78,28 +83,31 @@ function focusTerminal(term: XTerm, container: HTMLElement) {
 }
 
 export const TerminalComponent: React.FC<TerminalComponentProps> = ({
-  serverId, prompts, onSessionChange, onLogFailed, isActive
+  serverId, prompts, onSessionChange, onLogFailed, onStatus, confirmPaste, isActive, focusToken
 }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   // 最新の値を参照する（effect の依存に入れると再接続されてしまうため）
   const onSessionChangeRef = useRef(onSessionChange);
   const onLogFailedRef = useRef(onLogFailed);
+  const clipboardHandlersRef = useRef({ onStatus, confirmPaste });
   const isActiveRef = useRef(isActive);
   useEffect(() => {
     onSessionChangeRef.current = onSessionChange;
     onLogFailedRef.current = onLogFailed;
+    clipboardHandlersRef.current = { onStatus, confirmPaste };
     isActiveRef.current = isActive;
   });
 
-  // タブが表示されたらターミナルにフォーカスする（display: none 解除後に行うため次フレームで）
+  // タブが表示されたら（または focusToken が変わったら）ターミナルにフォーカスする
+  // （display: none 解除後・入力欄が消えた後に行うため次フレームで）
   useEffect(() => {
     const term = termRef.current;
     const container = terminalRef.current;
     if (!isActive || !term || !container) return;
     const frame = window.requestAnimationFrame(() => focusTerminal(term, container));
     return () => window.cancelAnimationFrame(frame);
-  }, [isActive]);
+  }, [isActive, focusToken]);
 
   useEffect(() => {
     const container = terminalRef.current;
@@ -107,6 +115,12 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
 
     const { term, fitAddon } = createTerminal(container);
     termRef.current = term;
+
+    const clipboard = attachClipboard(term, container, () => clipboardHandlersRef.current);
+    // アプリのショートカットはリモートへ送らない（イベントは window へ伝わり、App が処理する）
+    term.attachCustomKeyEventHandler(
+      (event) => matchAppShortcut(event) === null && clipboard.handleKeyEvent(event),
+    );
 
     const handleSessionChange = (info: SessionInfo) => {
       onSessionChangeRef.current?.(info);
@@ -138,6 +152,7 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
       resizeObserver.disconnect();
       if (frame !== undefined) window.cancelAnimationFrame(frame);
       detachSession?.();
+      clipboard.dispose();
       termRef.current = null;
       term.dispose();
     };

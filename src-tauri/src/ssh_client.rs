@@ -40,6 +40,8 @@ pub enum SessionCommand {
     /// 開いたログファイルを渡してログ取得を開始する
     StartLog(Box<SessionLog>),
     StopLog,
+    /// 文字コードを切り替える（画面表示・入力・ログのすべてに適用）
+    SetEncoding(TerminalCodec),
     Disconnect,
 }
 
@@ -224,6 +226,8 @@ impl SessionLoop<'_> {
                     self.log = Some(*log);
                 }
                 Ok(SessionCommand::StopLog) => self.stop_log(),
+                // 旧デコーダが保持していた途中のマルチバイト文字は破棄される
+                Ok(SessionCommand::SetEncoding(codec)) => self.codec = codec,
                 Ok(SessionCommand::Disconnect) | Err(TryRecvError::Disconnected) => {
                     return Ok(Flow::Stop)
                 }

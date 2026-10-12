@@ -1,4 +1,5 @@
 mod base64;
+mod clipboard;
 mod codec;
 mod config;
 mod credentials;
@@ -250,9 +251,40 @@ fn start_log(
     Ok(path.display().to_string())
 }
 
+/// 接続中のセッションの文字コードを切り替える（servers.json は変更しない）
+#[tauri::command]
+fn set_encoding(
+    state: State<'_, AppState>,
+    session_id: String,
+    encoding: String,
+) -> Result<(), String> {
+    let codec = TerminalCodec::new(Some(&encoding))?;
+    send_command(&state, &session_id, SessionCommand::SetEncoding(codec))
+}
+
 #[tauri::command]
 fn stop_log(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     send_command(&state, &session_id, SessionCommand::StopLog)
+}
+
+/// クリップボード操作は占有中の再試行で待つことがあるため、UI を止めないよう専用スレッドで行う
+async fn run_clipboard<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|e| format!("clipboard task failed: {e}"))?
+}
+
+/// テキストがない場合は null
+#[tauri::command]
+async fn clipboard_read() -> Result<Option<String>, String> {
+    run_clipboard(clipboard::read_text).await
+}
+
+#[tauri::command]
+async fn clipboard_write(text: String) -> Result<(), String> {
+    run_clipboard(move || clipboard::write_text(&text)).await
 }
 
 #[tauri::command]
@@ -334,6 +366,9 @@ pub fn run() {
             log_defaults,
             start_log,
             stop_log,
+            clipboard_read,
+            clipboard_write,
+            set_encoding,
             disconnect_ssh
         ])
         .run(tauri::generate_context!())

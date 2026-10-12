@@ -51,7 +51,7 @@
 | `auth.remember` | （使用しない） | 旧仕様の項目。記載があっても無視する。パスワードを保存しているかどうかは `credentials.json` にエントリがあるかで判定する（③参照）。 |
 | `env` | `"production"` / `"staging"` / `"development"` 等 | 環境識別子。`theme` 省略時の既定テーマ選択に使用。 |
 | `theme` | `themes.json` のテーマ名 / 省略可 | 指定時はenvに関係なくこのテーマを適用。省略時はenvに応じた既定テーマ。 |
-| `encoding` | `"UTF-8"`（既定） / `"Shift_JIS"` / `"EUC-JP"` 等 | 画面描画とログ保存に適用する文字コード。省略時はUTF-8。接続中もメニューから変更可能。 |
+| `encoding` | `"UTF-8"`（既定） / `"Shift_JIS"` / `"EUC-JP"` 等 | 画面描画とログ保存に適用する文字コード。省略時はUTF-8。接続中もステータスバーから変更可能（そのセッションのみ）。 |
 | `fileTransfer` | `"auto"`（既定） / `"sftp"` / `"scp"` | `auto` はSFTPを試し、使えなければファイル転送のみSCPにフォールバック。 |
 | `log.dir` | 文字列 | ログ保存先の既定値。省略時は全体設定の値。 |
 | `log.mode` | `"append"` / `"overwrite"` | 同名ファイルが存在する場合に追記するか上書きするか。 |
@@ -139,7 +139,6 @@
     "scrollback": 10000,
     "cursorStyle": "block",
     "cursorBlink": true,
-    "copyOnSelect": true,
     "rightClickPaste": true,
     "confirmMultilinePaste": true,
     "bell": "visual"
@@ -174,7 +173,6 @@
 | `terminal.fontFamily` | CSSフォント指定 | 英字フォント → 日本語フォント → 汎用の順にフォールバック。 |
 | `terminal.scrollback` | 数値（既定 10000） | スクロールバック保持行数。 |
 | `terminal.cursorStyle` | `"block"` / `"underline"` / `"bar"` | カーソル形状。 |
-| `terminal.copyOnSelect` | `true`（既定） / `false` | マウス選択で自動コピー（Tera Term方式）。 |
 | `terminal.rightClickPaste` | `true`（既定） / `false` | 右クリックで貼り付け。`false` の場合は右クリックでコンテキストメニュー。 |
 | `terminal.confirmMultilinePaste` | `true`（既定） / `false` | 複数行貼り付け時に確認ダイアログを表示。 |
 | `terminal.bell` | `"visual"` / `"sound"` / `"none"` | BEL受信時の動作。 |

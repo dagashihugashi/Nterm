@@ -24,15 +24,3 @@ export const startLog = (sessionId: string, request: LogRequest): Promise<string
   invoke<string>('start_log', { sessionId, ...request });
 
 export const stopLog = (sessionId: string): Promise<void> => invoke('stop_log', { sessionId });
-
-/**
- * ログ取得の開始／停止のショートカット（Alt+L）。
- * ターミナルにフォーカスがあるときもリモートへ送らず、アプリ側で処理する。
- */
-export const isToggleLogShortcut = (event: KeyboardEvent): boolean =>
-  event.type === 'keydown' &&
-  event.altKey &&
-  !event.ctrlKey &&
-  !event.shiftKey &&
-  !event.metaKey &&
-  event.code === 'KeyL';

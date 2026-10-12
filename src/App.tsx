@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Server, X } from "lucide-react";
 import { TerminalComponent } from "./components/Terminal";
+import { TabBar, moveTab, type Tab } from "./components/TabBar";
 import { ServerSidebar } from "./components/ServerSidebar";
 import { Sidebar, type SidebarView } from "./components/Sidebar";
 import { RemoteFileTree } from "./components/RemoteFileTree";
@@ -10,8 +10,11 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { CredentialDialog } from "./components/CredentialDialog";
 import { HostKeyDialog } from "./components/HostKeyDialog";
 import { LogDialog } from "./components/LogDialog";
+import { EncodingMenu } from "./components/EncodingMenu";
 import { usePromptQueue } from "./hooks/usePromptQueue";
-import { isToggleLogShortcut, stopLog } from "./lib/sessionLog";
+import { stopLog } from "./lib/sessionLog";
+import { isEditingText, matchAppShortcut, type AppAction } from "./lib/shortcuts";
+import type { PasteRequest, StatusMessage } from "./lib/terminalClipboard";
 import type {
   CredentialAnswer,
   CredentialRequest,
@@ -21,13 +24,6 @@ import type {
 } from "./lib/sshSession";
 import type { ServerConfig } from "./types/server";
 import "./App.css";
-
-/** タブIDは接続ごとに一意。同じサーバを複数タブで開ける。 */
-interface Tab {
-  id: string;
-  title: string;
-  serverId?: string;
-}
 
 type DialogState =
   | { kind: "add-server" }
@@ -44,6 +40,13 @@ const omitKey = <T,>(record: Record<string, T>, key: string): Record<string, T> 
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/** ステータスバーのメッセージを表示しておく時間 */
+const STATUS_TIMEOUT_MS = 5000;
+/** servers.json で encoding を省略した場合の文字コード（Rust 側の既定値と同じ） */
+const DEFAULT_ENCODING = "UTF-8";
+/** 貼り付け確認ダイアログで表示する行数 */
+const PASTE_PREVIEW_LINES = 10;
+
 /** 指定タブのログ開始ダイアログを閉じる（タブを閉じた・切断された場合） */
 const withoutLogDialogFor = (tabId: string) => (prev: DialogState): DialogState =>
   prev?.kind === "start-log" && prev.tabId === tabId ? null : prev;
@@ -59,10 +62,23 @@ function App() {
   const [tabSessions, setTabSessions] = useState<Record<string, SessionInfo>>({});
   /** ログ取得中のタブIDと書き込み先のパス */
   const [tabLogs, setTabLogs] = useState<Record<string, string>>({});
-  /** ステータスバーに表示する直近のエラー */
-  const [statusError, setStatusError] = useState<string | null>(null);
+  /** ステータスバーに一時的に表示するメッセージ（コピー結果・エラー等） */
+  const [status, setStatus] = useState<StatusMessage | null>(null);
+  /** タブごとの現在の文字コード（接続時はサーバ設定の値、接続中にメニューで切り替え可能） */
+  const [tabEncodings, setTabEncodings] = useState<Record<string, string>>({});
+  /** 名前を編集中のタブ */
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  /** 増やすと表示中のターミナルにフォーカスを戻す */
+  const [focusToken, setFocusToken] = useState(0);
   const hostKeyQueue = usePromptQueue<HostKeyPrompt, boolean>();
   const credentialQueue = usePromptQueue<CredentialRequest, CredentialAnswer | null>();
+  const pasteQueue = usePromptQueue<PasteRequest, boolean>();
+
+  useEffect(() => {
+    if (!status) return;
+    const timer = window.setTimeout(() => setStatus(null), STATUS_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [status]);
 
   // 参照が変わると全タブが再接続されるため、安定した ask だけに依存させる
   const prompts = useMemo<SessionPrompts>(
@@ -85,7 +101,42 @@ function App() {
   const openSession = (server: ServerConfig) => {
     const tab: Tab = { id: crypto.randomUUID(), title: server.name, serverId: server.id };
     setTabs((prev) => [...prev, tab]);
+    rememberEncoding(tab.id, server);
     setActiveTab(tab.id);
+  };
+
+  /**
+   * 接続時の文字コードを記録する（接続後にサーバ設定を編集しても、表示は実際のセッションに合わせる）。
+   * 接続処理（Rust 側）も同じく servers.json の encoding を使う。
+   */
+  const rememberEncoding = (tabId: string, server: ServerConfig | undefined) =>
+    setTabEncodings((prev) => ({ ...prev, [tabId]: server?.encoding ?? DEFAULT_ENCODING }));
+
+  /** 同じサーバへの新しい接続を、元のタブの右隣に開く */
+  const duplicateTab = (source: Tab) => {
+    if (!source.serverId) return;
+    const tab: Tab = { id: crypto.randomUUID(), title: source.title, serverId: source.serverId };
+    setTabs((prev) => {
+      const index = prev.findIndex((t) => t.id === source.id);
+      return [...prev.slice(0, index + 1), tab, ...prev.slice(index + 1)];
+    });
+    rememberEncoding(tab.id, servers.find((s) => s.id === source.serverId));
+    setActiveTab(tab.id);
+  };
+
+  const renameTab = (id: string, title: string) =>
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, title } : t)));
+
+  const handleTabMove = (id: string, toIndex: number) =>
+    setTabs((prev) => {
+      const moved = moveTab(prev, id, toIndex);
+      // 位置が変わらない場合は再描画しない
+      return moved.every((t, i) => t === prev[i]) ? prev : moved;
+    });
+
+  const endRename = () => {
+    setRenamingTabId(null);
+    setFocusToken((n) => n + 1);
   };
 
   const handleServerSaved = (saved: ServerConfig) => {
@@ -116,16 +167,24 @@ function App() {
     setTabLogs((prev) => omitKey(prev, tabId));
   }, []);
 
-  const closeTab = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
+  const closeTab = (id: string) => {
     const newTabs = tabs.filter((t) => t.id !== id);
     setTabs(newTabs);
     setTabSessions((prev) => omitKey(prev, id));
     setTabLogs((prev) => omitKey(prev, id));
+    setTabEncodings((prev) => omitKey(prev, id));
     setDialog(withoutLogDialogFor(id));
+    if (renamingTabId === id) setRenamingTabId(null);
     if (activeTab === id && newTabs.length > 0) {
       setActiveTab(newTabs[newTabs.length - 1].id);
     }
+  };
+
+  /** 表示中のタブから offset 個先のタブへ切り替える（端では反対側へ回る） */
+  const switchTab = (offset: number) => {
+    const index = tabs.findIndex((t) => t.id === activeTab);
+    if (index < 0 || tabs.length === 0) return;
+    setActiveTab(tabs[(index + offset + tabs.length) % tabs.length].id);
   };
 
   const credentialRequest = credentialQueue.current;
@@ -143,24 +202,55 @@ function App() {
     }
     const tabId = activeTab;
     stopLog(connectedSessionId)
-      .then(() => setStatusError(null))
-      .catch((error: unknown) => setStatusError(`Failed to stop logging: ${errorText(error)}`))
+      .catch((error: unknown) =>
+        setStatus({ kind: "error", text: `Failed to stop logging: ${errorText(error)}` }),
+      )
       .finally(() => setTabLogs((prev) => omitKey(prev, tabId)));
   };
 
-  // Alt+L（ダイアログ表示中は無効）。毎回のレンダーで最新の toggleLog を参照する
-  const toggleLogRef = useRef(toggleLog);
+  const activeTabObject = tabs.find((t) => t.id === activeTab);
+  const activeEncoding = tabEncodings[activeTab] ?? DEFAULT_ENCODING;
+
+  /** 表示中のセッションの文字コードを切り替える（servers.json は変更しない） */
+  const changeEncoding = (encoding: string) => {
+    if (!connectedSessionId) return;
+    const tabId = activeTab;
+    invoke("set_encoding", { sessionId: connectedSessionId, encoding })
+      .then(() => {
+        setTabEncodings((prev) => ({ ...prev, [tabId]: encoding }));
+        setStatus({ kind: "info", text: `Encoding: ${encoding}` });
+      })
+      .catch((error: unknown) =>
+        setStatus({ kind: "error", text: `Failed to change encoding: ${errorText(error)}` }),
+      )
+      .finally(() => setFocusToken((n) => n + 1));
+  };
+  const shortcutActions: Record<AppAction, () => void> = {
+    toggleLog,
+    nextTab: () => switchTab(1),
+    prevTab: () => switchTab(-1),
+    closeTab: () => activeTabObject && closeTab(activeTabObject.id),
+    duplicateTab: () => activeTabObject && duplicateTab(activeTabObject),
+    renameTab: () => activeTabObject && setRenamingTabId(activeTabObject.id),
+  };
+
+  // アプリのショートカット（ダイアログ表示中・入力欄の編集中は無効）。毎回のレンダーで最新の処理を参照する
+  const shortcutActionsRef = useRef(shortcutActions);
   const isDialogOpenRef = useRef(false);
   useEffect(() => {
-    toggleLogRef.current = toggleLog;
+    shortcutActionsRef.current = shortcutActions;
     isDialogOpenRef.current =
-      dialog !== null || credentialQueue.current !== null || hostKeyQueue.current !== null;
+      dialog !== null ||
+      credentialQueue.current !== undefined ||
+      hostKeyQueue.current !== undefined ||
+      pasteQueue.current !== undefined;
   });
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (!isToggleLogShortcut(event) || isDialogOpenRef.current) return;
+      const action = matchAppShortcut(event);
+      if (!action || isDialogOpenRef.current || isEditingText(event.target)) return;
       event.preventDefault();
-      toggleLogRef.current();
+      shortcutActionsRef.current[action]();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -171,33 +261,18 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen bg-[#1e1e1e] text-[#d4d4d4] select-none">
-      {/* Title/Tab Bar */}
-      <div className="flex bg-[#2d2d2d] border-b border-[#3c3c3c] items-end overflow-x-auto no-scrollbar">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`px-4 py-2 text-sm cursor-pointer border-r border-[#3c3c3c] flex items-center gap-2 group min-w-[120px] max-w-[200px] ${
-              activeTab === tab.id
-                ? "bg-[#1e1e1e] border-t-2 border-t-[#007acc] text-white"
-                : "bg-[#2d2d2d] hover:bg-[#333333] text-gray-400 border-t-2 border-t-transparent"
-            }`}
-          >
-            <Server size={14} className={activeTab === tab.id ? "text-[#007acc] shrink-0" : "text-gray-500 shrink-0"} />
-            <span className="truncate flex-1">{tab.title}</span>
-            {tabLogs[tab.id] && (
-              <span className="text-[10px] font-bold text-[#f14c4c] shrink-0" title={tabLogs[tab.id]}>
-                ● REC
-              </span>
-            )}
-            <X
-              size={14}
-              className={`hover:bg-[#444] rounded shrink-0 ${activeTab === tab.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
-              onClick={(e) => closeTab(e, tab.id)}
-            />
-          </div>
-        ))}
-      </div>
+      <TabBar
+        tabs={tabs}
+        activeTabId={activeTab}
+        tabLogs={tabLogs}
+        renamingTabId={renamingTabId}
+        onSelect={setActiveTab}
+        onClose={closeTab}
+        onMove={handleTabMove}
+        onRenameStart={setRenamingTabId}
+        onRename={renameTab}
+        onRenameEnd={endRename}
+      />
 
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden">
@@ -231,7 +306,10 @@ function App() {
               prompts={prompts}
               onSessionChange={(info) => handleSessionChange(tab.id, info)}
               onLogFailed={() => handleLogFailed(tab.id)}
+              onStatus={setStatus}
+              confirmPaste={pasteQueue.ask}
               isActive={activeTab === tab.id}
+              focusToken={focusToken}
             />
           ))}
         </div>
@@ -239,12 +317,17 @@ function App() {
 
       {/* Status Bar */}
       <div className="h-6 bg-[#007acc] flex items-center px-3 text-xs text-white gap-4 shrink-0">
-        {activeLogPath ? (
+        {status ? (
+          <span className={`truncate ${status.kind === "error" ? "font-semibold text-[#ffd2d2]" : ""}`}>
+            {status.kind === "error" ? "⚠ " : ""}
+            {status.text}
+          </span>
+        ) : activeLogPath ? (
           <span className="truncate select-text" title={activeLogPath}>
             <span className="font-bold text-[#ffd2d2]">● REC</span> {activeLogPath}
           </span>
         ) : (
-          <span className="truncate">{statusError ?? "Ready"}</span>
+          <span className="truncate">Ready</span>
         )}
         <span className="ml-auto flex items-center gap-4 shrink-0">
           {connectedSessionId && (
@@ -257,7 +340,9 @@ function App() {
               {activeLogPath ? "Stop logging" : "Start logging..."}
             </button>
           )}
-          <span>UTF-8</span>
+          {connectedSessionId && (
+            <EncodingMenu current={activeEncoding} onSelect={changeEncoding} />
+          )}
         </span>
       </div>
 
@@ -286,11 +371,28 @@ function App() {
           title={logDialogTab.title}
           onStarted={(path) => {
             setTabLogs((prev) => ({ ...prev, [logDialogTab.id]: path }));
-            setStatusError(null);
             closeDialog();
           }}
           onCancel={closeDialog}
         />
+      )}
+      {pasteQueue.current && (
+        <ConfirmDialog
+          title="Paste multiple lines"
+          confirmLabel="Paste"
+          onConfirm={async () => pasteQueue.answer(true)}
+          onCancel={() => pasteQueue.answer(false)}
+        >
+          <div className="mb-2">
+            Paste {pasteQueue.current.lineCount} lines into the terminal? Each line may run as a
+            command.
+          </div>
+          <pre className="max-h-48 overflow-auto p-2 bg-[#1e1e1e] border border-[#3c3c3c] rounded text-xs whitespace-pre select-text">
+            {pasteQueue.current.text.split(/\r\n|\r|\n/).slice(0, PASTE_PREVIEW_LINES).join("\n")}
+            {pasteQueue.current.lineCount > PASTE_PREVIEW_LINES &&
+              `\n... (${pasteQueue.current.lineCount - PASTE_PREVIEW_LINES} more lines)`}
+          </pre>
+        </ConfirmDialog>
       )}
       {credentialRequest && (
         <CredentialDialog
