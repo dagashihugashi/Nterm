@@ -4,7 +4,10 @@ import { TerminalComponent } from "./components/Terminal";
 import { TabBar, moveTab, type Tab } from "./components/TabBar";
 import { ServerSidebar } from "./components/ServerSidebar";
 import { Sidebar, type SidebarView } from "./components/Sidebar";
-import { RemoteFileTree } from "./components/RemoteFileTree";
+import { RemoteFileTree, type TreeRefreshRequest } from "./components/RemoteFileTree";
+import { TransferPanel } from "./components/TransferPanel";
+import { ConflictDialog } from "./components/ConflictDialog";
+import { useTransfers, type ConflictAnswer, type ConflictRequest } from "./hooks/useTransfers";
 import { ServerDialog } from "./components/ServerDialog";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { CredentialDialog } from "./components/CredentialDialog";
@@ -14,6 +17,13 @@ import { EncodingMenu } from "./components/EncodingMenu";
 import { SwitchUserDialog } from "./components/SwitchUserDialog";
 import { usePromptQueue } from "./hooks/usePromptQueue";
 import { stopLog } from "./lib/sessionLog";
+import {
+  loadThemes,
+  resolveTheme,
+  setTitleBarColor,
+  terminalTheme,
+  type ThemeMap,
+} from "./lib/themes";
 import { isEditingText, matchAppShortcut, type AppAction } from "./lib/shortcuts";
 import type { PasteRequest, StatusMessage } from "./lib/terminalClipboard";
 import type {
@@ -24,7 +34,7 @@ import type {
   SessionPrompts,
   SwitchSecretRequest,
 } from "./lib/sshSession";
-import type { ServerConfig } from "./types/server";
+import { envLabel, type ServerConfig } from "./types/server";
 import "./App.css";
 
 type DialogState =
@@ -32,9 +42,9 @@ type DialogState =
   | { kind: "edit-server"; server: ServerConfig }
   | { kind: "delete-server"; server: ServerConfig }
   | { kind: "start-log"; tabId: string }
+  | { kind: "close-tab"; tabId: string; activeTransfers: number }
   | null;
 
-const MOCKUP_TAB: Tab = { id: "mockup", title: "Local Mockup" };
 
 /** 指定キーを除いた新しいオブジェクトを返す */
 const omitKey = <T,>(record: Record<string, T>, key: string): Record<string, T> =>
@@ -54,8 +64,9 @@ const withoutLogDialogFor = (tabId: string) => (prev: DialogState): DialogState 
   prev?.kind === "start-log" && prev.tabId === tabId ? null : prev;
 
 function App() {
-  const [tabs, setTabs] = useState<Tab[]>([MOCKUP_TAB]);
-  const [activeTab, setActiveTab] = useState(MOCKUP_TAB.id);
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  /** 表示中のタブID（タブがなければ空文字） */
+  const [activeTab, setActiveTab] = useState("");
   const [servers, setServers] = useState<ServerConfig[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
@@ -76,6 +87,15 @@ function App() {
   const credentialQueue = usePromptQueue<CredentialRequest, CredentialAnswer | null>();
   const pasteQueue = usePromptQueue<PasteRequest, boolean>();
   const switchSecretQueue = usePromptQueue<SwitchSecretRequest, CredentialAnswer | null>();
+  const conflictQueue = usePromptQueue<ConflictRequest, ConflictAnswer>();
+  /** アップロード完了後のファイルツリーの再読み込み要求 */
+  const [treeRefresh, setTreeRefresh] = useState<(TreeRefreshRequest & { sessionId: string }) | null>(null);
+  const transfers = useTransfers({
+    askConflict: conflictQueue.ask,
+    onError: (text) => setStatus({ kind: "error", text }),
+    onUploaded: (sessionId, dir) =>
+      setTreeRefresh((prev) => ({ sessionId, dir, seq: (prev?.seq ?? 0) + 1 })),
+  });
 
   useEffect(() => {
     if (!status) return;
@@ -92,6 +112,21 @@ function App() {
     }),
     [hostKeyQueue.ask, credentialQueue.ask, switchSecretQueue.ask],
   );
+
+  /** themes.json のテーマ（読み込むまでは組み込みの既定のテーマで表示する） */
+  const [themes, setThemes] = useState<ThemeMap>({});
+
+  // themes.json を読み込む（なければ既定の内容で作成される）
+  useEffect(() => {
+    loadThemes()
+      .then((loaded) => {
+        setThemes(loaded.themes);
+        if (loaded.warning) setStatus({ kind: "error", text: loaded.warning });
+      })
+      .catch((error: unknown) =>
+        setStatus({ kind: "error", text: `Failed to load themes: ${errorText(error)}` }),
+      );
+  }, []);
 
   useEffect(() => {
     invoke<ServerConfig[]>("load_servers")
@@ -121,7 +156,6 @@ function App() {
 
   /** 同じサーバへの新しい接続を、元のタブの右隣に開く */
   const duplicateTab = (source: Tab) => {
-    if (!source.serverId) return;
     const tab: Tab = { id: crypto.randomUUID(), title: source.title, serverId: source.serverId };
     setTabs((prev) => {
       const index = prev.findIndex((t) => t.id === source.id);
@@ -182,9 +216,20 @@ function App() {
     setTabEncodings((prev) => omitKey(prev, id));
     setDialog(withoutLogDialogFor(id));
     if (renamingTabId === id) setRenamingTabId(null);
-    if (activeTab === id && newTabs.length > 0) {
-      setActiveTab(newTabs[newTabs.length - 1].id);
+    if (activeTab === id) {
+      setActiveTab(newTabs.length > 0 ? newTabs[newTabs.length - 1].id : "");
     }
+  };
+
+  /** タブを閉じる。転送中の場合は（閉じると転送がキャンセルされるため）確認する */
+  const requestCloseTab = (id: string) => {
+    const sessionId = tabSessions[id]?.sessionId;
+    const activeTransfers = sessionId ? transfers.activeCountFor(sessionId) : 0;
+    if (activeTransfers > 0) {
+      setDialog({ kind: "close-tab", tabId: id, activeTransfers });
+      return;
+    }
+    closeTab(id);
   };
 
   /** 表示中のタブから offset 個先のタブへ切り替える（端では反対側へ回る） */
@@ -216,6 +261,34 @@ function App() {
   };
 
   const activeTabObject = tabs.find((t) => t.id === activeTab);
+  const activeServer = servers.find((s) => s.id === activeTabObject?.serverId);
+  /** 画面全体（サイドバー・バー・文字色）は表示中のタブのサーバのテーマに合わせる */
+  const appTheme = resolveTheme(themes, activeServer);
+  const themeNames = Object.keys(themes);
+
+  // ターミナルの色はタブごと（タブのサーバのテーマ）。参照を保つため、関係する値が変わったときだけ作り直す
+  const tabTerminalThemes = useMemo(
+    () =>
+      Object.fromEntries(
+        tabs.map((tab) => [
+          tab.id,
+          terminalTheme(resolveTheme(themes, servers.find((s) => s.id === tab.serverId))),
+        ]),
+      ),
+    [tabs, servers, themes],
+  );
+
+  // タイトルバー（最小化・最大化・閉じるボタンのあるバー）をステータスバーと同じ色にする（Windows 11 のみ）
+  useEffect(() => {
+    setTitleBarColor(appTheme.barBackground, appTheme.barForeground).catch((error: unknown) =>
+      setStatus({ kind: "error", text: `Failed to change the title bar color: ${errorText(error)}` }),
+    );
+  }, [appTheme.barBackground, appTheme.barForeground]);
+  /** 表示中のタブ（接続中）のファイル転送先 */
+  const transferTarget =
+    connectedSessionId && activeTabObject
+      ? { sessionId: connectedSessionId, serverName: activeTabObject.title }
+      : null;
   const activeEncoding = tabEncodings[activeTab] ?? DEFAULT_ENCODING;
 
   /** 表示中のセッションの文字コードを切り替える（servers.json は変更しない） */
@@ -236,7 +309,7 @@ function App() {
     toggleLog,
     nextTab: () => switchTab(1),
     prevTab: () => switchTab(-1),
-    closeTab: () => activeTabObject && closeTab(activeTabObject.id),
+    closeTab: () => activeTabObject && requestCloseTab(activeTabObject.id),
     duplicateTab: () => activeTabObject && duplicateTab(activeTabObject),
     renameTab: () => activeTabObject && setRenamingTabId(activeTabObject.id),
   };
@@ -251,7 +324,8 @@ function App() {
       credentialQueue.current !== undefined ||
       hostKeyQueue.current !== undefined ||
       pasteQueue.current !== undefined ||
-      switchSecretQueue.current !== undefined;
+      switchSecretQueue.current !== undefined ||
+      conflictQueue.current !== undefined;
   });
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -268,23 +342,34 @@ function App() {
   const logDialogSession = logDialogTab ? tabSessions[logDialogTab.id] : undefined;
 
   return (
-    <div className="flex flex-col h-screen bg-[#1e1e1e] text-[#d4d4d4] select-none">
-      <TabBar
-        tabs={tabs}
-        activeTabId={activeTab}
-        tabLogs={tabLogs}
-        renamingTabId={renamingTabId}
-        onSelect={setActiveTab}
-        onClose={closeTab}
-        onMove={handleTabMove}
-        onRenameStart={setRenamingTabId}
-        onRename={renameTab}
-        onRenameEnd={endRename}
-      />
-
-      {/* Main Content Area */}
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar view={sidebarView} onViewChange={setSidebarView}>
+    <div
+      className="flex flex-col h-screen bg-[var(--nt-gutter)] text-[var(--nt-fg)] select-none"
+      style={
+        {
+          "--nt-bg": appTheme.background,
+          "--nt-fg": appTheme.foreground,
+          "--nt-sidebar-bg": appTheme.sidebarBackground,
+          "--nt-bar-bg": appTheme.barBackground,
+          "--nt-bar-fg": appTheme.barForeground,
+          // カードの間のすき間の色（サイドバーの色を暗くしたもの）
+          "--nt-gutter": `color-mix(in srgb, ${appTheme.sidebarBackground} 65%, #000)`,
+        } as React.CSSProperties
+      }
+    >
+      {/* Main Content Area（サイドバーとターミナルを角丸のカードとして並べる） */}
+      <div className="flex flex-1 overflow-hidden gap-1.5 p-1.5">
+        <Sidebar
+          view={sidebarView}
+          onViewChange={setSidebarView}
+          footer={
+            <TransferPanel
+              transfers={transfers.transfers}
+              onCancel={transfers.cancel}
+              onDismiss={transfers.dismiss}
+              onClearFinished={transfers.clearFinished}
+            />
+          }
+        >
           {sidebarView === "servers" && (
             <ServerSidebar
               servers={servers}
@@ -296,8 +381,14 @@ function App() {
             />
           )}
           {sidebarView === "files" &&
-            (connectedSessionId ? (
-              <RemoteFileTree key={connectedSessionId} sessionId={connectedSessionId} />
+            (connectedSessionId && transferTarget ? (
+              <RemoteFileTree
+                key={connectedSessionId}
+                sessionId={connectedSessionId}
+                onUpload={(paths, dir) => void transfers.upload(transferTarget, paths, dir)}
+                onDownload={(path, dir) => void transfers.download(transferTarget, path, dir)}
+                refreshRequest={treeRefresh?.sessionId === connectedSessionId ? treeRefresh : null}
+              />
             ) : (
               <div className="px-4 py-3 text-xs text-gray-500">
                 Select a connected tab to browse its files.
@@ -305,26 +396,51 @@ function App() {
             ))}
         </Sidebar>
 
-        {/* Terminal Area */}
-        <div className="flex-1 relative">
-          {tabs.map((tab) => (
-            <TerminalComponent
-              key={tab.id}
-              serverId={tab.serverId}
-              prompts={prompts}
-              onSessionChange={(info) => handleSessionChange(tab.id, info)}
-              onLogFailed={() => handleLogFailed(tab.id)}
-              onStatus={setStatus}
-              confirmPaste={pasteQueue.ask}
-              isActive={activeTab === tab.id}
-              focusToken={focusToken}
-            />
-          ))}
+        {/* Terminal Area（タブバーとターミナルで1枚のカード） */}
+        <div className="flex-1 min-w-0 flex flex-col rounded-lg border border-white/10 overflow-hidden bg-[var(--nt-bg)]">
+          <TabBar
+            tabs={tabs}
+            activeTabId={activeTab}
+            tabLogs={tabLogs}
+            renamingTabId={renamingTabId}
+            onSelect={setActiveTab}
+            onClose={requestCloseTab}
+            onMove={handleTabMove}
+            onRenameStart={setRenamingTabId}
+            onRename={renameTab}
+            onRenameEnd={endRename}
+          />
+          <div className="flex-1 min-h-0 relative">
+            {tabs.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-600">
+                Select a server from the sidebar to connect.
+              </div>
+            )}
+            {tabs.map((tab) => (
+              <TerminalComponent
+                key={tab.id}
+                serverId={tab.serverId}
+                prompts={prompts}
+                onSessionChange={(info) => handleSessionChange(tab.id, info)}
+                onLogFailed={() => handleLogFailed(tab.id)}
+                onStatus={setStatus}
+                confirmPaste={pasteQueue.ask}
+                isActive={activeTab === tab.id}
+                focusToken={focusToken}
+                theme={tabTerminalThemes[tab.id]}
+              />
+            ))}
+          </div>
         </div>
       </div>
 
       {/* Status Bar */}
-      <div className="h-6 bg-[#007acc] flex items-center px-3 text-xs text-white gap-4 shrink-0">
+      <div className="h-6 bg-[var(--nt-bar-bg)] flex items-center px-3 text-xs text-[var(--nt-bar-fg)] gap-4 shrink-0">
+        {activeServer?.env && (
+          <span className="shrink-0 px-1.5 rounded font-semibold bg-black/20" title="Environment">
+            {envLabel(activeServer.env)}
+          </span>
+        )}
         {status ? (
           <span className={`truncate ${status.kind === "error" ? "font-semibold text-[#ffd2d2]" : ""}`}>
             {status.kind === "error" ? "⚠ " : ""}
@@ -355,10 +471,15 @@ function App() {
       </div>
 
       {dialog?.kind === "add-server" && (
-        <ServerDialog onSaved={handleServerSaved} onCancel={closeDialog} />
+        <ServerDialog themeNames={themeNames} onSaved={handleServerSaved} onCancel={closeDialog} />
       )}
       {dialog?.kind === "edit-server" && (
-        <ServerDialog server={dialog.server} onSaved={handleServerSaved} onCancel={closeDialog} />
+        <ServerDialog
+          server={dialog.server}
+          themeNames={themeNames}
+          onSaved={handleServerSaved}
+          onCancel={closeDialog}
+        />
       )}
       {dialog?.kind === "delete-server" && (
         <ConfirmDialog
@@ -409,6 +530,28 @@ function App() {
           error={credentialRequest.error}
           onSubmit={(answer) => credentialQueue.answer(answer)}
           onCancel={() => credentialQueue.answer(null)}
+        />
+      )}
+      {dialog?.kind === "close-tab" && (
+        <ConfirmDialog
+          title="Close tab"
+          confirmLabel="Close and cancel"
+          isDestructive
+          onConfirm={async () => {
+            closeTab(dialog.tabId);
+            closeDialog();
+          }}
+          onCancel={closeDialog}
+        >
+          {dialog.activeTransfers} file transfer{dialog.activeTransfers === 1 ? " is" : "s are"} in
+          progress for this tab. Closing the tab cancels {dialog.activeTransfers === 1 ? "it" : "them"}.
+        </ConfirmDialog>
+      )}
+      {conflictQueue.current && (
+        <ConflictDialog
+          key={conflictQueue.current.path}
+          request={conflictQueue.current}
+          onAnswer={conflictQueue.answer}
         />
       )}
       {switchSecretQueue.current && (

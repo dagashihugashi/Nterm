@@ -5,7 +5,7 @@ import { Server, X } from 'lucide-react';
 export interface Tab {
   id: string;
   title: string;
-  serverId?: string;
+  serverId: string;
 }
 
 /** ドラッグ開始とみなす移動量（クリックと区別する） */
@@ -133,7 +133,7 @@ export function TabBar({
   };
 
   return (
-    <div className="flex bg-[#2d2d2d] border-b border-[#3c3c3c] items-end overflow-x-auto no-scrollbar">
+    <div className="flex shrink-0 min-h-[38px] bg-[var(--nt-sidebar-bg)] border-b border-white/10 items-end overflow-x-auto no-scrollbar">
       {tabs.map((tab) => {
         const isActive = tab.id === activeTabId;
         const logPath = tabLogs[tab.id];
@@ -150,11 +150,11 @@ export function TabBar({
             title={tab.title}
             className={`px-4 py-2 text-sm cursor-pointer border-r border-[#3c3c3c] flex items-center gap-2 group min-w-[120px] max-w-[200px] ${
               isActive
-                ? 'bg-[#1e1e1e] border-t-2 border-t-[#007acc] text-white'
-                : 'bg-[#2d2d2d] hover:bg-[#333333] text-gray-400 border-t-2 border-t-transparent'
+                ? 'bg-[var(--nt-bg)] border-t-2 border-t-[var(--nt-bar-bg)] text-[var(--nt-fg)]'
+                : 'bg-[var(--nt-sidebar-bg)] hover:bg-white/5 text-gray-400 border-t-2 border-t-transparent'
             } ${draggingId === tab.id ? 'opacity-60' : ''}`}
           >
-            <Server size={14} className={isActive ? 'text-[#007acc] shrink-0' : 'text-gray-500 shrink-0'} />
+            <Server size={14} className={isActive ? 'text-[var(--nt-bar-bg)] shrink-0' : 'text-gray-500 shrink-0'} />
             {renamingTabId === tab.id ? (
               <RenameInput
                 initialTitle={tab.title}

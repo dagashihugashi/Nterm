@@ -29,7 +29,12 @@ vte = "0.15.0"
 unicode-width = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 encoding_rs = "0.8.42"
-windows = { version = "0.62.2", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
+windows = { version = "0.62.2", features = [
+    "Win32_Security_Cryptography",
+    "Win32_Foundation",
+    # タイトルバーの色（テーマ）。Windows 11 のみ有効
+    "Win32_Graphics_Dwm",
+] }
 tauri-plugin-dialog = "2"
 clipboard-win = "5"
 

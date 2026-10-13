@@ -3,17 +3,21 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   AUTH_TYPE_OPTIONS,
   ENCODINGS,
-  ENV_SUGGESTIONS,
+  ENV_OPTIONS,
+  envLabel,
   type AuthType,
   type ServerConfig,
   type ServerInput,
 } from '../types/server';
 import { Dialog, DialogFooter, Field, inputClass } from './Dialog';
 import { SwitchUserFields, type SwitchUserRow } from './SwitchUserFields';
+import { PRODUCTION_THEME_NAME } from '../lib/themes';
 
 type ServerDialogProps = {
   /** 指定時は編集モード、未指定時は追加モード */
   server?: ServerConfig;
+  /** themes.json で定義されているテーマ名 */
+  themeNames: readonly string[];
   onSaved: (server: ServerConfig) => void;
   onCancel: () => void;
 };
@@ -27,6 +31,8 @@ type FormState = {
   keyFile: string;
   env: string;
   encoding: string;
+  /** 空文字なら env に応じた既定のテーマ */
+  theme: string;
   switchUsers: SwitchUserRow[];
 };
 
@@ -42,6 +48,7 @@ const EMPTY_FORM: FormState = {
   keyFile: DEFAULT_KEY_FILE,
   env: '',
   encoding: 'UTF-8',
+  theme: '',
   switchUsers: [],
 };
 
@@ -56,6 +63,7 @@ function toForm(server: ServerConfig | undefined): FormState {
     keyFile: server.auth.keyFile ?? DEFAULT_KEY_FILE,
     env: server.env ?? '',
     encoding: server.encoding ?? 'UTF-8',
+    theme: server.theme ?? '',
     switchUsers: (server.switchUsers ?? []).map((step) => ({
       user: step.user,
       command: step.command ?? '',
@@ -77,6 +85,7 @@ function toInput(form: FormState): ServerInput | string {
     keyFile: form.authType === 'publickey' ? form.keyFile.trim() || null : null,
     env: form.env.trim() || null,
     encoding: form.encoding,
+    theme: form.theme || null,
     switchUsers: form.switchUsers.map((row) => ({
       user: row.user.trim(),
       command: row.command.trim() || null,
@@ -120,11 +129,15 @@ function SavedCredential({ serverId }: { serverId: string }) {
   );
 }
 
-export function ServerDialog({ server, onSaved, onCancel }: ServerDialogProps) {
+export function ServerDialog({ server, themeNames, onSaved, onCancel }: ServerDialogProps) {
   const isEdit = server !== undefined;
   const [form, setForm] = useState<FormState>(() => toForm(server));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const isCustomEnv = form.env !== '' && !ENV_OPTIONS.some((option) => option.value === form.env);
+  // themes.json から消えたテーマが設定されている場合も、選択肢に残して分かるようにする
+  const themeOptions =
+    form.theme && !themeNames.includes(form.theme) ? [...themeNames, form.theme] : themeNames;
 
   const handleChange =
     (field: keyof FormState) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -193,10 +206,12 @@ export function ServerDialog({ server, onSaved, onCancel }: ServerDialogProps) {
         <div className="flex gap-2">
           <div className="flex-1">
             <Field label="Environment">
-              <input list="env-suggestions" value={form.env} onChange={handleChange('env')} className={inputClass} placeholder="production" />
-              <datalist id="env-suggestions">
-                {ENV_SUGGESTIONS.map((env) => <option key={env} value={env} />)}
-              </datalist>
+              <select value={form.env} onChange={handleChange('env')} className={inputClass}>
+                <option value="">(None)</option>
+                {ENV_OPTIONS.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+                {/* 一覧にない値（以前の設定など）は書き換えずに残す */}
+                {isCustomEnv && <option value={form.env}>{envLabel(form.env)}</option>}
+              </select>
             </Field>
           </div>
           <div className="flex-1">
@@ -207,6 +222,16 @@ export function ServerDialog({ server, onSaved, onCancel }: ServerDialogProps) {
             </Field>
           </div>
         </div>
+        <Field label="Theme">
+          <select value={form.theme} onChange={handleChange('theme')} className={inputClass}>
+            <option value="">Default for environment (production: {PRODUCTION_THEME_NAME})</option>
+            {themeOptions.map((name) => (
+              <option key={name} value={name}>
+                {themeNames.includes(name) ? name : `${name} (not found in themes.json)`}
+              </option>
+            ))}
+          </select>
+        </Field>
         <SwitchUserFields
           rows={form.switchUsers}
           onChange={(switchUsers) => setForm((prev) => ({ ...prev, switchUsers }))}

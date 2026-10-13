@@ -82,6 +82,7 @@ impl From<String> for ConnectError {
     }
 }
 
+#[derive(Clone)]
 pub struct ConnectParams {
     pub host: String,
     pub port: u16,
@@ -91,12 +92,10 @@ pub struct ConnectParams {
     pub rows: u32,
 }
 
-/// TCP接続・ハンドシェイク・ホスト鍵検証・認証・シェル起動までを行う（ブロッキング）。
+/// TCP接続・ハンドシェイク・ホスト鍵検証・認証までを行う（ブロッキング）。
 /// ホスト鍵の検証は認証より前に行い、なりすましサーバへパスワード等を送らないようにする。
-pub fn connect(
-    params: &ConnectParams,
-    known_hosts: &Path,
-) -> Result<(Session, Channel), ConnectError> {
+/// ターミナル用とファイル転送用の接続で共用する。
+pub fn open_session(params: &ConnectParams, known_hosts: &Path) -> Result<Session, ConnectError> {
     let tcp = open_tcp(&params.host, params.port)?;
     let mut session = Session::new().map_err(|e| format!("failed to create SSH session: {e}"))?;
     session.set_tcp_stream(tcp);
@@ -109,7 +108,15 @@ pub fn connect(
     }
     ssh_auth::authenticate(&session, &params.user, &params.credential)
         .map_err(|message| ConnectError::AuthFailed { message })?;
+    Ok(session)
+}
 
+/// 認証後、PTY 付きのシェルを起動する（ブロッキング）。
+pub fn connect(
+    params: &ConnectParams,
+    known_hosts: &Path,
+) -> Result<(Session, Channel), ConnectError> {
+    let session = open_session(params, known_hosts)?;
     let mut channel = session
         .channel_session()
         .map_err(|e| format!("failed to open channel: {e}"))?;

@@ -14,7 +14,8 @@ const LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED: i32 = -19;
 /// 鍵ファイルの形式判定に読む先頭バイト数
 const KEY_HEADER_LEN: usize = 64;
 
-/// 認証に使う資格情報
+/// 認証に使う資格情報（ファイル転送用の接続でも使うため、タブを開いている間は保持する）
+#[derive(Clone)]
 pub enum Credential {
     Password(String),
     PublicKey {

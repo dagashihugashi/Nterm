@@ -16,6 +16,7 @@ dist-ssr
 servers.json
 credentials.json
 known_hosts
+themes.json
 *.tmp
 
 # Editor directories and files

@@ -8,8 +8,8 @@ import { matchAppShortcut } from '../lib/shortcuts';
 import { attachClipboard, type PasteRequest, type StatusMessage } from '../lib/terminalClipboard';
 
 interface TerminalComponentProps {
-  /** 未指定の場合はローカルのモックアップ表示 */
-  serverId?: string;
+  /** 接続先（servers.json の id） */
+  serverId: string;
   /** パスワード入力・ホスト鍵確認。参照が変わると再接続されるため、呼び出し側で固定すること */
   prompts: SessionPrompts;
   /** 接続状態の変化（参照が変わっても再接続しない） */
@@ -23,38 +23,17 @@ interface TerminalComponentProps {
   isActive: boolean;
   /** 値が変わると（表示中なら）ターミナルにフォーカスを戻す（タブ名の編集後など） */
   focusToken: number;
+  /** ターミナルの色（themes.json）。変わるとその場で反映する（再接続しない） */
+  theme: ITheme;
 }
 
-const DEFAULT_THEME: ITheme = {
-  background: '#1e1e1e',
-  foreground: '#d4d4d4',
-  cursor: '#ffffff',
-  selectionBackground: '#264f78',
-  black: '#000000',
-  red: '#cd3131',
-  green: '#0dbc79',
-  yellow: '#e5e510',
-  blue: '#2472c8',
-  magenta: '#bc3fbc',
-  cyan: '#11a8cd',
-  white: '#e5e5e5',
-  brightBlack: '#666666',
-  brightRed: '#f14c4c',
-  brightGreen: '#23d18b',
-  brightYellow: '#f5f543',
-  brightBlue: '#3b8eea',
-  brightMagenta: '#d670d6',
-  brightCyan: '#29b8db',
-  brightWhite: '#e5e5e5',
-};
-
-function createTerminal(container: HTMLElement): { term: XTerm; fitAddon: FitAddon } {
+function createTerminal(container: HTMLElement, theme: ITheme): { term: XTerm; fitAddon: FitAddon } {
   const term = new XTerm({
     fontFamily: 'Cascadia Mono, BIZ UDGothic, monospace',
     fontSize: 14,
     cursorStyle: 'block',
     cursorBlink: true,
-    theme: DEFAULT_THEME,
+    theme,
   });
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
@@ -83,10 +62,18 @@ function focusTerminal(term: XTerm, container: HTMLElement) {
 }
 
 export const TerminalComponent: React.FC<TerminalComponentProps> = ({
-  serverId, prompts, onSessionChange, onLogFailed, onStatus, confirmPaste, isActive, focusToken
+  serverId, prompts, onSessionChange, onLogFailed, onStatus, confirmPaste, isActive, focusToken, theme
 }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
+  // 作成時の色（以降の変更は下の effect で反映する）
+  const themeRef = useRef(theme);
+
+  // テーマの変更をその場で反映する（ターミナルを作り直すと再接続になるため）
+  useEffect(() => {
+    themeRef.current = theme;
+    if (termRef.current) termRef.current.options.theme = theme;
+  }, [theme]);
   // 最新の値を参照する（effect の依存に入れると再接続されてしまうため）
   const onSessionChangeRef = useRef(onSessionChange);
   const onLogFailedRef = useRef(onLogFailed);
@@ -113,7 +100,7 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
     const container = terminalRef.current;
     if (!container) return;
 
-    const { term, fitAddon } = createTerminal(container);
+    const { term, fitAddon } = createTerminal(container, themeRef.current);
     termRef.current = term;
 
     const clipboard = attachClipboard(term, container, () => clipboardHandlersRef.current);
@@ -127,17 +114,11 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
       // 接続できたらすぐに操作できるよう、表示中のタブならフォーカスする
       if (info.state === 'connected' && isActiveRef.current) focusTerminal(term, container);
     };
-    const detachSession = serverId
-      ? attachSshSession(term, serverId, prompts, {
-          onSessionChange: handleSessionChange,
-          onLogFailed: (message) => onLogFailedRef.current?.(message),
-          onStatus: (message) => clipboardHandlersRef.current.onStatus(message),
-        })
-      : undefined;
-    if (!serverId) {
-      term.writeln('\x1b[1;32mWelcome to Nterm\x1b[0m');
-      term.writeln('This is a local mockup tab. Select a server to connect.');
-    }
+    const detachSession = attachSshSession(term, serverId, prompts, {
+      onSessionChange: handleSessionChange,
+      onLogFailed: (message) => onLogFailedRef.current?.(message),
+      onStatus: (message) => clipboardHandlersRef.current.onStatus(message),
+    });
 
     let frame: number | undefined;
     const resizeObserver = new ResizeObserver(() => {
@@ -152,7 +133,7 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
     return () => {
       resizeObserver.disconnect();
       if (frame !== undefined) window.cancelAnimationFrame(frame);
-      detachSession?.();
+      detachSession();
       clipboard.dispose();
       termRef.current = null;
       term.dispose();
@@ -160,7 +141,10 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
   }, [serverId, prompts]);
 
   return (
-    <div className={`w-full h-full p-2 bg-[#1e1e1e] ${isActive ? '' : 'hidden'}`}>
+    <div
+      className={`w-full h-full p-2 ${isActive ? '' : 'hidden'}`}
+      style={{ background: theme.background }}
+    >
       <div ref={terminalRef} className="w-full h-full" />
     </div>
   );

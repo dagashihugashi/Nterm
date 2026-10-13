@@ -41,6 +41,8 @@ export interface ServerInput {
   keyFile: string | null;
   env: string | null;
   encoding: string | null;
+  /** themes.json のテーマ名（null なら env に応じた既定） */
+  theme: string | null;
   switchUsers: SwitchUserStep[];
 }
 
@@ -51,5 +53,19 @@ export const AUTH_TYPE_OPTIONS = [
 ] as const satisfies readonly { value: AuthType; label: string }[];
 
 export const ENCODINGS = ['UTF-8', 'Shift_JIS', 'EUC-JP'] as const;
-export const ENV_SUGGESTIONS = ['production', 'staging', 'development'] as const;
+/** サーバ編集ダイアログで選べる環境（servers.json には value を保存する） */
+export const ENV_OPTIONS = [
+  { value: 'production', label: 'Production' },
+  { value: 'development', label: 'Development' },
+  { value: 'seed', label: 'Seed' },
+  { value: 'regression', label: 'Regression' },
+] as const;
+
+/** 環境の表示名（一覧にない値は先頭だけ大文字にする） */
+export function envLabel(env: string): string {
+  const option = ENV_OPTIONS.find((o) => o.value === env.trim().toLowerCase());
+  if (option) return option.label;
+  const trimmed = env.trim();
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
 export const DEFAULT_ENV = 'default';

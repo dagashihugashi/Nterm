@@ -32,6 +32,11 @@ pub enum SftpRequest {
         path: String,
         reply: Sender<Result<Vec<RemoteEntry>, String>>,
     },
+    /// 各パスが存在するか（アップロード時の上書き確認に使う）
+    Exists {
+        paths: Vec<String>,
+        reply: Sender<Result<Vec<bool>, String>>,
+    },
 }
 
 /// セッションスレッドが保持する SFTP の状態。SFTP チャネルは最初の要求時に開く。
@@ -51,6 +56,9 @@ impl SftpClient {
             }
             SftpRequest::List { path, reply } => {
                 let _ = reply.send(self.list(session, &path));
+            }
+            SftpRequest::Exists { paths, reply } => {
+                let _ = reply.send(self.exists(session, &paths));
             }
         }
         session.set_blocking(false);
@@ -74,6 +82,14 @@ impl SftpClient {
             .realpath(Path::new("."))
             .map_err(|e| format!("failed to resolve home directory: {e}"))?;
         Ok(to_remote_path(&home.to_string_lossy()))
+    }
+
+    fn exists(&mut self, session: &Session, paths: &[String]) -> Result<Vec<bool>, String> {
+        let sftp = self.sftp(session)?;
+        Ok(paths
+            .iter()
+            .map(|path| sftp.stat(Path::new(path)).is_ok())
+            .collect())
     }
 
     fn list(&mut self, session: &Session, dir: &str) -> Result<Vec<RemoteEntry>, String> {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, Folder, Pencil, Plus, Server, Trash2 } from 'lucide-react';
-import { DEFAULT_ENV, type ServerConfig } from '../types/server';
+import { DEFAULT_ENV, envLabel, type ServerConfig } from '../types/server';
 
 type ServerSidebarProps = {
   servers: ServerConfig[];
@@ -71,7 +71,7 @@ export function ServerSidebar({
             >
               {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               <Folder size={14} className="text-[#c5c5c5]" />
-              <span className="ml-1 font-medium">{env}</span>
+              <span className="ml-1 font-medium">{envLabel(env)}</span>
             </div>
             {isExpanded && envServers.map((server) => (
               <div

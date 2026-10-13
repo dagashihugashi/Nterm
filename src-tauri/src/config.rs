@@ -154,6 +154,9 @@ pub struct ServerInput {
     pub key_file: Option<String>,
     pub env: Option<String>,
     pub encoding: Option<String>,
+    /// themes.json のテーマ名。省略時は env に応じた既定のテーマ
+    #[serde(default)]
+    pub theme: Option<String>,
     #[serde(default)]
     pub switch_users: Vec<SwitchUserStep>,
 }
@@ -181,7 +184,7 @@ impl ServerInput {
         self.apply_to(base)
     }
 
-    /// 既存の設定に入力値を反映する。ダイアログで扱わない項目（theme・log 等）は維持する。
+    /// 既存の設定に入力値を反映する。ダイアログで扱わない項目（log・fileTransfer 等）は維持する。
     fn apply_to(self, base: ServerConfig) -> ServerConfig {
         ServerConfig {
             name: self.name.trim().to_string(),
@@ -195,6 +198,7 @@ impl ServerInput {
             },
             env: non_empty(self.env),
             encoding: non_empty(self.encoding),
+            theme: non_empty(self.theme),
             switch_users: self.switch_users.iter().map(SwitchUserStep::normalized).collect(),
             ..base
         }
@@ -529,6 +533,7 @@ mod tests {
             key_file: None,
             env: Some("  ".to_string()),
             encoding: Some("Shift_JIS".to_string()),
+            theme: None,
             switch_users: Vec::new(),
         }
     }
@@ -652,14 +657,25 @@ mod tests {
     fn replace_server_updates_fields_and_keeps_others() {
         let json = with_server(r#""theme": "danger-red", "log": { "mode": "append" }"#);
         let original = parse_servers(&json).unwrap();
-        let updated = replace_server(&original, "srv-001", new_server("Web01-renamed")).unwrap();
+        let input = ServerInput { theme: Some(" light ".to_string()), ..new_server("Web01-renamed") };
+        let updated = replace_server(&original, "srv-001", input).unwrap();
         let server = &updated[0];
         assert_eq!(server.id, "srv-001");
         assert_eq!(server.name, "Web01-renamed");
         assert_eq!(server.host, "192.0.2.10");
-        assert_eq!(server.theme.as_deref(), Some("danger-red"));
+        assert_eq!(server.theme.as_deref(), Some("light"));
+        // ダイアログで扱わない項目は維持する
         assert_eq!(server.log.as_ref().unwrap().mode, Some(LogMode::Append));
         assert_eq!(original[0].name, "Web01");
+    }
+
+    #[test]
+    fn empty_theme_means_default_for_environment() {
+        let json = with_server(r#""theme": "danger-red""#);
+        let original = parse_servers(&json).unwrap();
+        let input = ServerInput { theme: Some(String::new()), ..new_server("Web01") };
+        let updated = replace_server(&original, "srv-001", input).unwrap();
+        assert!(updated[0].theme.is_none());
     }
 
     #[test]

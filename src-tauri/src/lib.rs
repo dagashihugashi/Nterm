@@ -10,6 +10,8 @@ mod sftp;
 mod ssh_auth;
 mod ssh_client;
 mod switch_user;
+mod themes;
+mod transfer;
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Sender};
@@ -29,6 +31,8 @@ use sftp::{RemoteEntry, SftpRequest};
 use ssh_auth::Credential;
 use ssh_client::{ConnectError, ConnectParams, SessionCommand, SessionSetup, SshEvent};
 use switch_user::{SwitchStep, SwitchUserAutomation};
+use themes::{load_themes, set_title_bar_color};
+use transfer::{cancel_transfer, local_file_exists, start_transfer, TransferRegistry};
 
 type SessionMap = HashMap<String, Sender<SessionCommand>>;
 /// ユーザーの確認待ちのホスト鍵（キーは known_hosts のホスト名表記）
@@ -205,7 +209,10 @@ async fn connect_ssh(
     let source = SecretSource::resolve(&server_id, secret, remember)?;
     let PreparedConnection { params, codec, switch_steps } =
         prepare_connection(&server_id, source.secret(), cols, rows)?;
+    // ファイル転送は別の接続で行うため、接続情報をタブを開いている間だけ保持する
+    let transfer_params = params.clone();
     let (session, channel) = establish(&state, params).await?;
+    app.state::<TransferRegistry>().register_session(&session_id, transfer_params);
     // 認証に成功した値だけを保存する（誤ったパスワードは保存しない）
     let warning = source.persist(&server_id);
     let setup = SessionSetup {
@@ -221,6 +228,8 @@ async fn connect_ssh(
         if let Ok(mut sessions) = app.state::<AppState>().sessions() {
             sessions.remove(&session_id);
         }
+        // 切断したタブの転送はキャンセルし、保持していた接続情報を破棄する
+        app.state::<TransferRegistry>().close_session(&session_id);
     };
     ssh_client::spawn_session(session, channel, setup, on_event, commands, on_exit);
     Ok(ConnectOutcome { warning })
@@ -267,6 +276,16 @@ async fn request_sftp<T: Send + 'static>(
 #[tauri::command]
 async fn sftp_home(state: State<'_, AppState>, session_id: String) -> Result<String, String> {
     request_sftp(&state, &session_id, |reply| SftpRequest::Home { reply }).await
+}
+
+/// 各パスが存在するか（アップロード時の上書き確認に使う）
+#[tauri::command]
+async fn sftp_exists(
+    state: State<'_, AppState>,
+    session_id: String,
+    paths: Vec<String>,
+) -> Result<Vec<bool>, String> {
+    request_sftp(&state, &session_id, |reply| SftpRequest::Exists { paths, reply }).await
 }
 
 #[tauri::command]
@@ -404,8 +423,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(TransferRegistry::default())
         .invoke_handler(tauri::generate_handler![
             load_servers,
+            load_themes,
+            set_title_bar_color,
             add_server,
             update_server,
             delete_server,
@@ -417,6 +439,10 @@ pub fn run() {
             resize_ssh,
             sftp_home,
             sftp_list,
+            sftp_exists,
+            start_transfer,
+            cancel_transfer,
+            local_file_exists,
             log_defaults,
             start_log,
             stop_log,

@@ -49,7 +49,7 @@
 | `auth.type` | `"password"` / `"publickey"` / `"keyboard-interactive"` | 認証方式。 |
 | `auth.keyFile` | 文字列 / `null` | `publickey` 時の秘密鍵ファイルパス（OpenSSH形式）。 |
 | `auth.remember` | （使用しない） | 旧仕様の項目。記載があっても無視する。パスワードを保存しているかどうかは `credentials.json` にエントリがあるかで判定する（③参照）。 |
-| `env` | `"production"` / `"staging"` / `"development"` 等 | 環境識別子。`theme` 省略時の既定テーマ選択に使用。 |
+| `env` | `"production"` / `"development"` / `"seed"` / `"regression"` / 省略可 | 環境識別子。`theme` 省略時の既定テーマ選択（`production` → `danger-red`）、サイドバーのグループ分け、ステータスバーの表示に使用。サーバ編集ダイアログでは上記4つから選ぶ（手で書いた他の値もそのまま使える）。 |
 | `theme` | `themes.json` のテーマ名 / 省略可 | 指定時はenvに関係なくこのテーマを適用。省略時はenvに応じた既定テーマ。 |
 | `encoding` | `"UTF-8"`（既定） / `"Shift_JIS"` / `"EUC-JP"` 等 | 画面描画とログ保存に適用する文字コード。省略時はUTF-8。接続中もステータスバーから変更可能（そのセッションのみ）。 |
 | `fileTransfer` | `"auto"`（既定） / `"sftp"` / `"scp"` | `auto` はSFTPを試し、使えなければファイル転送のみSCPにフォールバック。 |
@@ -98,7 +98,20 @@
 ```
 
 * キー名は xterm.js の `ITheme` に合わせる（通常8色 `black`〜`white` ＋ 明るい8色 `brightBlack`〜`brightWhite` ＝ ANSI 16色）。
-* テーマで省略したキーは `default-dark` の値を引き継ぐ（例: `danger-red` は背景・文字・カーソル・選択色のみ上書きし、ANSI 16色は `default-dark` を使用）。
+* アプリの画面の色も設定できる:
+
+| キー | 適用先 |
+| :--- | :--- |
+| `background` | ターミナルの背景（選択中のタブの背景も同じ色） |
+| `foreground` | 文字色（ターミナルと画面全体） |
+| `sidebarBackground` | サイドバー・タブバーの背景 |
+| `barBackground` / `barForeground` | 下部のステータスバーと上部のタイトルバー（最小化・最大化・閉じるボタンのあるバー）の背景・文字色。選択中のタブの上端の線も `barBackground` |
+
+* 色は `#rgb` / `#rrggbb` / `#rrggbbaa` のみ。不明なキー・不正な色があれば themes.json 全体を無視して組み込みのテーマで動作し、ステータスバーに警告を表示する。
+* テーマで省略したキーは `default-dark` の値を引き継ぐ（例: `danger-red` は背景・文字・カーソル・選択色・バーのみ上書きし、ANSI 16色は `default-dark` を使用）。利用者が themes.json に同名のテーマを書いた場合は組み込みのテーマを置き換える。
+* themes.json が存在しない場合は、初回起動時に組み込みのテーマ（`default-dark` / `danger-red`）を書き出す（利用者がテーマを追加する見本）。
+* タイトルバーの色は Windows 11 のみ変更できる（DWM の `DWMWA_CAPTION_COLOR`）。Windows 10 では標準の色のまま。
+* 画面全体（サイドバー・バー・文字色）は表示中のタブのサーバのテーマ、ターミナルの色はタブごとのサーバのテーマを使う。タブがない場合は `default-dark`。
 
 ### ③ `credentials.json`
 ```json
