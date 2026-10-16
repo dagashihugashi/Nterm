@@ -8,7 +8,7 @@
 | **デスクトップ基盤** | **Tauri v2** | メモリ消費が少なく軽量。Windows標準のWebView2を利用するため、インストーラ不要の単一フォルダ展開（ポータブル実行）に最適。WebView2のユーザーデータフォルダはアプリと同階層に指定する。 |
 | **フロントエンド** | **TypeScript + React** | タブのD&D並び替え（`@dnd-kit` 等）やディレクトリツリーコンポーネントのエコシステムが充実しているため。 |
 | **ターミナル描画** | **xterm.js (`@xterm/xterm`)** | VS Code等でも採用されている業界標準。ANSIエスケープシーケンスの解釈とWebGLアクセラレーションによる高速描画が可能。 |
-| **SSH/SFTP/SCP通信** | **`ssh2` クレート (libssh2)** | C言語ベースのlibssh2ラッパー。`ssh-rsa`（SHA-1）や古い暗号スイートを幅広くサポートし、社内のレガシー機器とも確実に通信可能。SFTP API（`Session::sftp`）とSCP API（`scp_send` / `scp_recv`）を両方提供。SFTP優先・SCPはファイル転送のフォールバック。暗号バックエンドは**OpenSSL（`vendored-openssl` で静的リンク）**を採用（WinCNGは `ssh-ed25519` / `ecdsa` / `curve25519` 等が使えないため）。ホスト鍵検証は `KnownHosts` API、Keepaliveは `set_keepalive` を使用。 |
+| **SSH/SFTP/SCP通信** | **`ssh2` クレート (libssh2)** | C言語ベースのlibssh2ラッパー。`ssh-rsa`（SHA-1）や古い暗号スイートを幅広くサポートし、社内のレガシー機器とも確実に通信可能。SFTP API（`Session::sftp`）とSCP API（`scp_send` / `scp_recv`）を両方提供（本アプリはSFTPのみ使用。SCPフォールバックは対象外）。暗号バックエンドは**OpenSSL（`vendored-openssl` で静的リンク）**を採用（WinCNGは `ssh-ed25519` / `ecdsa` / `curve25519` 等が使えないため）。ホスト鍵検証は `KnownHosts` API、Keepaliveは `set_keepalive` を使用。 |
 | **ログ整形** | **`vte` クレート** | Alacritty由来のステートフルなVTパーサ。チャンク境界で分断されたエスケープシーケンスも正しく扱えるため、ストリーミングでのANSI除去に使用。パース結果を「行バッファ＋カーソル位置」に適用し（BS・CR・`CSI n D/C`・`CSI K`・`CSI P`・`CSI @` 等）、LF受信時に確定行として書き出す。 |
 | **パスワード暗号化** | **Windows DPAPI（`windows` クレートの `CryptProtectData` / `CryptUnprotectData`）** | OS標準機能のため鍵管理が不要。ログオンユーザに紐づくため、同一PC・同一ユーザ以外では復号できない。 |
 | **文字コード変換** | **`encoding_rs`** | Mozilla開発のエンコーディング変換ライブラリ。デフォルトUTF-8、ユーザ選択でShift_JIS / EUC-JP等へ切り替え。ストリーミングデコーダ（`Decoder`）でチャンク境界のマルチバイト分断にも対応。自動判定は行わないため `chardetng` は不採用。 |
@@ -52,7 +52,7 @@
 | `env` | `"production"` / `"development"` / `"seed"` / `"regression"` / 省略可 | 環境識別子。`theme` 省略時の既定テーマ選択（`production` → `danger-red`）、サイドバーのグループ分け、ステータスバーの表示に使用。サーバ編集ダイアログでは上記4つから選ぶ（手で書いた他の値もそのまま使える）。 |
 | `theme` | `themes.json` のテーマ名 / 省略可 | 指定時はenvに関係なくこのテーマを適用。省略時はenvに応じた既定テーマ。 |
 | `encoding` | `"UTF-8"`（既定） / `"Shift_JIS"` / `"EUC-JP"` 等 | 画面描画とログ保存に適用する文字コード。省略時はUTF-8。接続中もステータスバーから変更可能（そのセッションのみ）。 |
-| `fileTransfer` | `"auto"`（既定） / `"sftp"` / `"scp"` | `auto` はSFTPを試し、使えなければファイル転送のみSCPにフォールバック。 |
+| `fileTransfer` | `"auto"`（既定） / `"sftp"` / `"scp"` | 将来の拡張用（現在は未使用。転送は常にSFTP。SCPフォールバックは対象外）。 |
 | `log.dir` | 文字列 | ログ保存先の既定値。省略時は全体設定の値。 |
 | `log.mode` | `"append"` / `"overwrite"` | 同名ファイルが存在する場合に追記するか上書きするか。 |
 | `switchUsers` | `[{ "user": "oracle", "command": "su - {user}" }]` / 省略可 | ログイン後に順に実行するユーザ切り替え（最大5つ）。`command` 省略時は `su - {user}`。パスワードは `credentials.json` に `{id}#su:{user}` のキーで保存する。 |

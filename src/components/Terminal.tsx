@@ -25,6 +25,8 @@ interface TerminalComponentProps {
   focusToken: number;
   /** ターミナルの色（themes.json）。変わるとその場で反映する（再接続しない） */
   theme: ITheme;
+  /** ファイルツリーの一覧を取得するユーザが変わった（null ならログインユーザ） */
+  onTreeUser?: (user: string | null) => void;
 }
 
 function createTerminal(container: HTMLElement, theme: ITheme): { term: XTerm; fitAddon: FitAddon } {
@@ -62,7 +64,7 @@ function focusTerminal(term: XTerm, container: HTMLElement) {
 }
 
 export const TerminalComponent: React.FC<TerminalComponentProps> = ({
-  serverId, prompts, onSessionChange, onLogFailed, onStatus, confirmPaste, isActive, focusToken, theme
+  serverId, prompts, onSessionChange, onLogFailed, onStatus, confirmPaste, isActive, focusToken, theme, onTreeUser
 }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -77,11 +79,13 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
   // 最新の値を参照する（effect の依存に入れると再接続されてしまうため）
   const onSessionChangeRef = useRef(onSessionChange);
   const onLogFailedRef = useRef(onLogFailed);
+  const onTreeUserRef = useRef(onTreeUser);
   const clipboardHandlersRef = useRef({ onStatus, confirmPaste });
   const isActiveRef = useRef(isActive);
   useEffect(() => {
     onSessionChangeRef.current = onSessionChange;
     onLogFailedRef.current = onLogFailed;
+    onTreeUserRef.current = onTreeUser;
     clipboardHandlersRef.current = { onStatus, confirmPaste };
     isActiveRef.current = isActive;
   });
@@ -118,6 +122,7 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
       onSessionChange: handleSessionChange,
       onLogFailed: (message) => onLogFailedRef.current?.(message),
       onStatus: (message) => clipboardHandlersRef.current.onStatus(message),
+      onTreeUser: (user) => onTreeUserRef.current?.(user),
     });
 
     let frame: number | undefined;

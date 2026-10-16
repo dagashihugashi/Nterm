@@ -10,6 +10,7 @@ mod sftp;
 mod ssh_auth;
 mod ssh_client;
 mod switch_user;
+mod switched_lister;
 mod themes;
 mod transfer;
 
@@ -218,7 +219,8 @@ async fn connect_ssh(
     let setup = SessionSetup {
         codec,
         server_id,
-        switch_user: SwitchUserAutomation::new(switch_steps, Instant::now()),
+        switch_user: SwitchUserAutomation::new(switch_steps.clone(), Instant::now()),
+        lister_steps: switch_steps,
     };
 
     let (sender, commands) = mpsc::channel();

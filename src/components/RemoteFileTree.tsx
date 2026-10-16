@@ -35,6 +35,8 @@ type RemoteFileTreeProps = {
   /** リモートのファイルを指定したローカルのフォルダへダウンロードする */
   onDownload: (remotePath: string, localDir: string) => void;
   refreshRequest?: TreeRefreshRequest | null;
+  /** su した後のユーザの権限で一覧を表示している場合のユーザ名（ログインユーザなら null） */
+  viewUser?: string | null;
 };
 
 type ContextMenuState = { x: number; y: number; entry: RemoteEntry };
@@ -87,7 +89,7 @@ const iconButtonClass =
 const menuItemClass = 'w-full px-3 py-1 text-left hover:bg-[#094771]';
 
 /** 接続中セッションのリモートファイルを SFTP でツリー表示する。ファイルのドロップでアップロード、右クリックでダウンロード。 */
-export function RemoteFileTree({ sessionId, onUpload, onDownload, refreshRequest }: RemoteFileTreeProps) {
+export function RemoteFileTree({ sessionId, onUpload, onDownload, refreshRequest, viewUser }: RemoteFileTreeProps) {
   const [root, setRoot] = useState<string | null>(null);
   const [rootError, setRootError] = useState<string | null>(null);
   const [dirs, setDirs] = useState<Record<string, DirState>>({});
@@ -274,6 +276,14 @@ export function RemoteFileTree({ sessionId, onUpload, onDownload, refreshRequest
         <span className="flex-1 truncate text-xs text-gray-300 select-text" title={root ?? ''}>
           {root ?? '…'}
         </span>
+        {viewUser && (
+          <span
+            className="shrink-0 px-1 rounded text-[10px] bg-[var(--nt-bar-bg)] text-[var(--nt-bar-fg)]"
+            title={`Listing as ${viewUser} (the user switched to after login). File transfers still use the login user.`}
+          >
+            as {viewUser}
+          </span>
+        )}
         <button
           type="button"
           title="Parent directory"

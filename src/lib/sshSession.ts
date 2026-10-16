@@ -72,7 +72,8 @@ type SshEvent =
   | { event: 'data'; data: string }
   | { event: 'closed'; data: { reason: string | null } }
   | { event: 'logFailed'; data: { message: string } }
-  | { event: 'switchUser'; data: SwitchUserNotice };
+  | { event: 'switchUser'; data: SwitchUserNotice }
+  | { event: 'treeUser'; data: { user: string | null; error: string | null } };
 
 export type SessionState = 'connecting' | 'connected' | 'closed';
 
@@ -88,6 +89,8 @@ export interface SessionCallbacks {
   onLogFailed?: (message: string) => void;
   /** ステータスバーに表示する結果（ユーザ切り替えの成否など） */
   onStatus?: (message: StatusMessage) => void;
+  /** ファイルツリーの一覧を取得するユーザが変わった（null ならログインユーザ） */
+  onTreeUser?: (user: string | null) => void;
 }
 
 const writeNotice = (term: Terminal, color: number, message: string) =>
@@ -163,6 +166,13 @@ export function attachSshSession(
       }
       if (message.event === 'switchUser') {
         handleSwitchUser(message.data);
+        return;
+      }
+      if (message.event === 'treeUser') {
+        callbacks.onTreeUser?.(message.data.user);
+        if (message.data.error) {
+          callbacks.onStatus?.({ kind: 'error', text: `File tree: ${message.data.error}` });
+        }
         return;
       }
       setState('closed');

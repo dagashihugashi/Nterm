@@ -34,7 +34,8 @@ const COMMAND_FAILURE_WORDS: &[&str] =
     &["does not exist", "unknown id", "unknown user", "permission denied"];
 const CTRL_C: &str = "\x03";
 
-/// 1回分の切り替え手順
+/// 1回分の切り替え手順（ファイルツリー用の隠しシェルでも同じ手順を使うため複製できる）
+#[derive(Clone)]
 pub struct SwitchStep {
     pub user: String,
     /// 送信するコマンド（`{user}` は展開済み）

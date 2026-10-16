@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
@@ -15,7 +16,8 @@ use crate::host_key::{self, HostKeyPrompt};
 use crate::session_log::SessionLog;
 use crate::sftp::{SftpClient, SftpRequest};
 use crate::ssh_auth::{self, Credential};
-use crate::switch_user::{Action as SwitchAction, SwitchUserAutomation, SwitchUserNotice};
+use crate::switch_user::{Action as SwitchAction, SwitchStep, SwitchUserAutomation, SwitchUserNotice};
+use crate::switched_lister::{ListerEvent, SwitchedLister};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// 無通信時の Keepalive 送信間隔（ファイアウォール等による無通信切断を防ぐ）。
@@ -36,6 +38,8 @@ pub enum SshEvent {
     LogFailed { message: String },
     /// ログイン後のユーザ切り替えの進行状況
     SwitchUser(SwitchUserNotice),
+    /// ファイルツリーの一覧を取得するユーザ（null ならログインユーザの SFTP）
+    TreeUser { user: Option<String>, error: Option<String> },
 }
 
 /// セッションスレッドへの指示。
@@ -61,6 +65,8 @@ pub struct SessionSetup {
     pub server_id: String,
     /// ログイン後のユーザ切り替え（設定がなければ None）
     pub switch_user: Option<SwitchUserAutomation>,
+    /// ファイルツリー用の隠しシェルで行う切り替えの手順（ターミナルと同じ）
+    pub lister_steps: Vec<SwitchStep>,
 }
 
 /// 接続失敗の理由。フロントエンドへは `{ kind: "hostKey" | "failed", ... }` として届く。
@@ -195,6 +201,11 @@ struct SessionLoop<'a> {
     server_id: String,
     /// 実行中のユーザ切り替え（完了・中断したら None）
     switch_user: Option<SwitchUserAutomation>,
+    lister_steps: Vec<SwitchStep>,
+    /// ターミナルの切り替えで入力されたパスワード（ファイルツリー用の隠しシェルで再利用する。メモリ上のみ）
+    entered_secrets: HashMap<String, String>,
+    /// su した後のユーザの権限でファイル一覧を取得する隠しシェル（準備できるまでは SFTP を使う）
+    lister: Option<SwitchedLister>,
 }
 
 fn run_session(
@@ -215,6 +226,9 @@ fn run_session(
         next_keepalive: Instant::now(),
         server_id: setup.server_id,
         switch_user: setup.switch_user,
+        lister_steps: setup.lister_steps,
+        entered_secrets: HashMap::new(),
+        lister: None,
     };
     let result = state.run(commands);
     state.shutdown();
@@ -241,6 +255,7 @@ impl SessionLoop<'_> {
             };
             self.send_keepalive()?;
             self.tick_switch_user();
+            self.poll_lister();
             if !wrote && !received {
                 thread::sleep(IDLE_SLEEP);
             }
@@ -282,7 +297,7 @@ impl SessionLoop<'_> {
                 Ok(SessionCommand::Resize { cols, rows }) => {
                     resize(self.session, &mut self.channel, cols, rows)?
                 }
-                Ok(SessionCommand::Sftp(request)) => self.sftp.handle(self.session, request),
+                Ok(SessionCommand::Sftp(request)) => self.handle_sftp(request),
                 Ok(SessionCommand::StartLog(log)) => {
                     // 取得中に開始し直した場合は、前のログを閉じてから切り替える
                     self.stop_log();
@@ -358,15 +373,77 @@ impl SessionLoop<'_> {
             match action {
                 SwitchAction::Send(text) => self.pending_input.extend(self.codec.encode(&text)),
                 SwitchAction::PersistSecret { user, secret, remember } => {
+                    self.entered_secrets.insert(user.clone(), secret.clone());
                     if let Err(message) = persist_switch_secret(&self.server_id, &user, &secret, remember) {
                         self.notify_switch(SwitchUserNotice::Warning { message });
                     }
+                }
+                SwitchAction::Notify(SwitchUserNotice::Finished) => {
+                    self.notify_switch(SwitchUserNotice::Finished);
+                    // 切り替えが完了したら、ファイルツリーも同じユーザの権限で表示する
+                    self.start_lister();
                 }
                 SwitchAction::Notify(notice) => self.notify_switch(notice),
             }
         }
         if !self.switch_user.as_ref().is_some_and(SwitchUserAutomation::is_active) {
             self.switch_user = None;
+        }
+    }
+
+    /// ファイルツリー用の隠しシェルを開き、ターミナルと同じ手順で su を始める
+    fn start_lister(&mut self) {
+        let steps: Vec<SwitchStep> = self
+            .lister_steps
+            .iter()
+            .map(|step| SwitchStep {
+                saved_secret: self
+                    .entered_secrets
+                    .get(&step.user)
+                    .cloned()
+                    .or_else(|| step.saved_secret.clone()),
+                ..step.clone()
+            })
+            .collect();
+        match open_hidden_shell(self.session) {
+            Ok(channel) => self.lister = SwitchedLister::start(channel, steps, Instant::now()),
+            Err(error) => self.notify_tree_user(None, Some(error)),
+        }
+    }
+
+    fn poll_lister(&mut self) {
+        let Some(lister) = self.lister.as_mut() else {
+            return;
+        };
+        match lister.poll(Instant::now()) {
+            Ok(events) => {
+                for event in events {
+                    match event {
+                        ListerEvent::Ready { user } => self.notify_tree_user(Some(user), None),
+                        ListerEvent::Failed { message } => {
+                            self.lister = None;
+                            self.notify_tree_user(None, Some(message));
+                        }
+                    }
+                }
+            }
+            Err(message) => {
+                self.lister = None;
+                self.notify_tree_user(None, Some(message));
+            }
+        }
+    }
+
+    fn notify_tree_user(&self, user: Option<String>, error: Option<String>) {
+        // フロントエンド側が既に破棄されている場合は届かなくてよい
+        let _ = self.events.send(SshEvent::TreeUser { user, error });
+    }
+
+    /// 一覧の取得は、su 済みの隠しシェルが使えればそちらで（su した後の権限）、なければ SFTP で行う
+    fn handle_sftp(&mut self, request: SftpRequest) {
+        match (request, self.lister.as_mut().filter(|lister| lister.is_ready())) {
+            (SftpRequest::List { path, reply }, Some(lister)) => lister.enqueue(path, reply),
+            (request, _) => self.sftp.handle(self.session, request),
         }
     }
 
@@ -402,8 +479,23 @@ impl SessionLoop<'_> {
         // SFTP チャネルはセッションを閉じる前に、ブロッキングモードで解放する
         self.session.set_blocking(true);
         drop(self.sftp);
+        drop(self.lister);
         close(self.session, &mut self.channel);
     }
+}
+
+/// ファイルツリー用の隠しシェル（PTY 付き）を開く。開く間だけブロッキングにする。
+fn open_hidden_shell(session: &Session) -> Result<Channel, String> {
+    session.set_blocking(true);
+    let result = (|| -> Result<Channel, ssh2::Error> {
+        let mut channel = session.channel_session()?;
+        // dumb: 色付きのプロンプト等を抑える。幅は一覧の行が折り返されないよう広く取る
+        channel.request_pty("dumb", None, Some((1000, 50, 0, 0)))?;
+        channel.shell()?;
+        Ok(channel)
+    })();
+    session.set_blocking(false);
+    result.map_err(|e| format!("failed to open a shell for the file tree: {e}"))
 }
 
 /// 切り替えに成功したパスワードを保存する（remember = false なら保存済みの値を削除する）

@@ -200,8 +200,16 @@ function App() {
     // 切断時はセッション側でログも閉じられる
     if (info.state === "closed") {
       setTabLogs((prev) => omitKey(prev, tabId));
+      setTabTreeUsers((prev) => omitKey(prev, tabId));
       setDialog(withoutLogDialogFor(tabId));
     }
+  }, []);
+
+  /** ファイルツリーを su した後のユーザの権限で表示しているタブとそのユーザ */
+  const [tabTreeUsers, setTabTreeUsers] = useState<Record<string, string>>({});
+
+  const handleTreeUser = useCallback((tabId: string, user: string | null) => {
+    setTabTreeUsers((prev) => (user ? { ...prev, [tabId]: user } : omitKey(prev, tabId)));
   }, []);
 
   const handleLogFailed = useCallback((tabId: string) => {
@@ -214,6 +222,7 @@ function App() {
     setTabSessions((prev) => omitKey(prev, id));
     setTabLogs((prev) => omitKey(prev, id));
     setTabEncodings((prev) => omitKey(prev, id));
+    setTabTreeUsers((prev) => omitKey(prev, id));
     setDialog(withoutLogDialogFor(id));
     if (renamingTabId === id) setRenamingTabId(null);
     if (activeTab === id) {
@@ -353,6 +362,8 @@ function App() {
           "--nt-bar-fg": appTheme.barForeground,
           // カードの間のすき間の色（サイドバーの色を暗くしたもの）
           "--nt-gutter": `color-mix(in srgb, ${appTheme.sidebarBackground} 65%, #000)`,
+          // スクロールバーのつまみの色（サイドバーの色を明るくしたもの）
+          "--nt-scrollbar-thumb": `color-mix(in srgb, ${appTheme.sidebarBackground} 70%, #fff)`,
         } as React.CSSProperties
       }
     >
@@ -383,8 +394,10 @@ function App() {
           {sidebarView === "files" &&
             (connectedSessionId && transferTarget ? (
               <RemoteFileTree
-                key={connectedSessionId}
+                // 表示ユーザが変わったら（su 完了後）作り直して読み込み直す
+                key={`${connectedSessionId}:${tabTreeUsers[activeTab] ?? ""}`}
                 sessionId={connectedSessionId}
+                viewUser={tabTreeUsers[activeTab] ?? null}
                 onUpload={(paths, dir) => void transfers.upload(transferTarget, paths, dir)}
                 onDownload={(path, dir) => void transfers.download(transferTarget, path, dir)}
                 refreshRequest={treeRefresh?.sessionId === connectedSessionId ? treeRefresh : null}
@@ -428,6 +441,7 @@ function App() {
                 isActive={activeTab === tab.id}
                 focusToken={focusToken}
                 theme={tabTerminalThemes[tab.id]}
+                onTreeUser={(user) => handleTreeUser(tab.id, user)}
               />
             ))}
           </div>

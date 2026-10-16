@@ -12,3 +12,9 @@ html, body, #root {
   color: #d4d4d4; /* default-dark foreground */
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
+
+/* スクロールバーはテーマのサイドバーの色に合わせる（--nt-scrollbar-thumb は App で設定） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--nt-scrollbar-thumb, #4a4a4a) transparent;
+}
