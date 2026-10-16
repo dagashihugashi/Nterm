@@ -5,8 +5,13 @@ import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
-export default defineConfig(() => ({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
+
+  // AI あり版（--mode ai）は出力先を分ける（AI なし版の dist を上書きしない。tauri.ai.conf.json の frontendDist と同じ）
+  build: {
+    outDir: mode === "ai" ? "dist-ai" : "dist",
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

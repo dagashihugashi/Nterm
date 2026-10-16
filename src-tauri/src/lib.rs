@@ -1,3 +1,5 @@
+#[cfg(feature = "ai")]
+mod ai;
 mod base64;
 mod clipboard;
 mod codec;
@@ -452,7 +454,9 @@ pub fn run() {
             clipboard_write,
             set_encoding,
             provide_switch_secret,
-            disconnect_ssh
+            disconnect_ssh,
+            #[cfg(feature = "ai")]
+            ai::ai_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

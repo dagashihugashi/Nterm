@@ -1,13 +1,18 @@
 {
-  "name": "nterm",
+  "name": "orca",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "dev:ai": "vite --mode ai",
+    "build:ai": "tsc && vite build --mode ai",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev:noai": "tauri dev --config src-tauri/tauri.noai.conf.json",
+    "tauri:build:noai": "tauri build --config src-tauri/tauri.noai.conf.json",
+    "check:no-ai": "bun scripts/check-no-ai.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

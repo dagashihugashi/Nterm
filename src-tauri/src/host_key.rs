@@ -10,7 +10,7 @@ use crate::config::config_dir;
 
 const KNOWN_HOSTS_FILE: &str = "known_hosts";
 const DEFAULT_SSH_PORT: u16 = 22;
-const ENTRY_COMMENT: &str = "added by Nterm";
+const ENTRY_COMMENT: &str = "added by Orca";
 
 /// known_hosts の「読み込み→更新→書き込み」を直列化する
 static KNOWN_HOSTS_WRITE_LOCK: Mutex<()> = Mutex::new(());

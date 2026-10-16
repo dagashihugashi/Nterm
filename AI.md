@@ -8,10 +8,10 @@
 
 ## 1. 目的・方針
 
-* VS Code の Claude 拡張のような**チャット UI** を Nterm に組み込み、接続中のサーバの調査（ログ・設定ファイルの確認、エラーの解説、「この出力は何？」など）を AI に手伝わせる。
+* VS Code の Claude 拡張のような**チャット UI** を Orca に組み込み、接続中のサーバの調査（ログ・設定ファイルの確認、エラーの解説、「この出力は何？」など）を AI に手伝わせる。
 * **AI にできることは参照（読み取り）だけに制限する。** サーバへの書き込み・任意のコマンド実行・ターミナルへの入力は AI に行わせない。
   * AI がコマンドを提案した場合も、実行するのは人（「ターミナルに挿入」→ 人が確認して Enter）。
-* **AI はコマンド文字列を書かない。** AI が指定できるのはツールの引数（パス・行数・検索語）だけで、実際に実行するコマンドは Nterm が固定の形で組み立てる（「3. AI がサーバに触れる経路」参照）。
+* **AI はコマンド文字列を書かない。** AI が指定できるのはツールの引数（パス・行数・検索語）だけで、実際に実行するコマンドは Orca が固定の形で組み立てる（「3. AI がサーバに触れる経路」参照）。
 
 ## 2. 前提・制約
 
@@ -25,7 +25,7 @@
 
 ### 2.3 Claude Code との比較（root で読ませる根拠）
 * Claude Code は PowerShell から ssh して su すれば、root で書き込みも含めて何でもできる。現場でも秘密ファイルを含めてコピー＆ペーストで AI に見せている。
-* それと比べると、**root でも「決まった形の読み取りしかできない」Nterm の AI のほうが制御は強い**。このため、su した後のユーザー（root 等）の権限で読ませることを許容する。
+* それと比べると、**root でも「決まった形の読み取りしかできない」Orca の AI のほうが制御は強い**。このため、su した後のユーザー（root 等）の権限で読ませることを許容する。
 
 ## 3. AI がサーバに触れる経路
 
@@ -33,7 +33,7 @@
 | :--- | :--- | :--- |
 | A. SFTP の読み取り API | 一覧・属性・ファイル読み込み。ログインユーザーの権限でしか読めない | 不採用（su 後のユーザーで読めないため） |
 | B. AI が書いたコマンドを許可リストで判定して実行 | `df` `ps` `grep` 等を AI が組み立てる | **不採用**（参照系に見えて書き込み・任意実行ができる抜け道が多く、判定しきれない） |
-| **B'. Nterm が固定の形で組み立てたコマンドを隠しシェルで実行** | AI はツールの引数だけを渡し、Nterm がクォートしてコマンドに埋め込む | **採用** |
+| **B'. Orca が固定の形で組み立てたコマンドを隠しシェルで実行** | AI はツールの引数だけを渡し、Orca がクォートしてコマンドに埋め込む | **採用** |
 | C. ユーザーのターミナルへの入力 | AI がターミナルに文字を打ち込む | **不採用**（操作中のシェルに割り込むため危険） |
 
 * B を不採用とした理由（メモ）: `find -delete`、`awk 'BEGIN{system(...)}'`、`sed -i`、`less` 内の `!`、リダイレクト `>`、`$(...)` など。B' では AI がコマンドを書かないため、この判定自体が不要になる。
@@ -52,7 +52,7 @@
 
 すべて読み取りのみ。実行するコマンドは下表の形に固定し、引数以外は変えられない。
 
-| ツール | 内容 | Nterm が組み立てるコマンド |
+| ツール | 内容 | Orca が組み立てるコマンド |
 | :--- | :--- | :--- |
 | `list_sessions` | 開いているタブ（サーバ名・ホスト・環境・接続状態・読み取りユーザー）の一覧 | （サーバへの通信なし） |
 | `list_dir(session, path)` | ディレクトリの一覧 | `find '<path>' -mindepth 1 -maxdepth 1 -printf ...`（ツリーと同じ） |
@@ -60,7 +60,7 @@
 | `read_file(session, path, offset, limit)` | 指定範囲の行だけを返す | `sed -n '<開始>,<終了>p' -- '<path>'` |
 | `tail_file(session, path, lines)` | 末尾 N 行だけを返す | `tail -n <N> -- '<path>'` |
 | `search_file(session, path, pattern, context)` | 一致行と前後数行だけを返す | `grep -F -n -C <N> -e '<語>' -- '<path>'` |
-| `read_terminal(session, lines)` | ターミナルの直近の出力（ANSI エスケープ除去済み・ログ整形と同じ処理） | （サーバへの通信なし。Nterm の手元のバッファ） |
+| `read_terminal(session, lines)` | ターミナルの直近の出力（ANSI エスケープ除去済み・ログ整形と同じ処理） | （サーバへの通信なし。Orca の手元のバッファ） |
 
 * チャットは**ウィンドウに1つ**（複数サーバにまたがる作業を想定）。各ツールは対象のタブ（`session`）を引数で指定する。
 * **トークン消費の抑制**: ログ全体を渡さず、範囲読み・末尾読み・絞り込みで必要な部分だけを返す。1回あたりの返却サイズにも上限を設ける。
@@ -87,11 +87,11 @@
 * Claude 拡張と同様に、**右側のサイドパネル**にチャットを表示する。
 * AI が使ったツールは折りたためる形で表示する（何を読んだかが分かるように）。
 * ツール実行の承認・拒否ボタン、提案されたコマンドの「ターミナルに挿入」ボタン。
-* **ターミナルで選択した範囲を AI に聞く**（右クリックメニューの「AI に聞く」）。選択範囲をチャットの入力欄に引用として入れ、「これ何？」をすぐ聞けるようにする。
+* **ターミナルで選択した範囲を AI に聞く**（Ctrl+Shift+A、またはチャット欄の「選択範囲を引用」ボタン。右クリックは貼り付けのまま）。選択範囲をチャットの入力欄に引用として入れ、「これ何？」をすぐ聞けるようにする。
 
 ## 8. AI との接続方式（**X 案に決定**）
 
-* **X 案（Nterm が Bedrock の API を直接呼ぶ）を採用する。** 社内では MCP サーバへの接続が認められない見込みで、通信先は Claude のエンドポイント（Bedrock）のみとなるため。Y 案は不採用（検討の経緯として下表と 8.1 を残す）。
+* **X 案（Orca が Bedrock の API を直接呼ぶ）を採用する。** 社内では MCP サーバへの接続が認められない見込みで、通信先は Claude のエンドポイント（Bedrock）のみとなるため。Y 案は不採用（検討の経緯として下表と 8.1 を残す）。
 
 ### 8.0a 接続先（プロバイダ）
 エージェントのループ・ツール・承認は共通とし、API の呼び先だけを切り替える。
@@ -99,31 +99,31 @@
 | 接続先 | 用途 | 設定の取得元 | 状態 |
 | :--- | :--- | :--- | :--- |
 | **Amazon Bedrock** | 社用 PC | Claude Code の `settings.json` の `env`（下記 8.0） | 初版 |
-| **Anthropic API（API キー）** | 私用 PC | 環境変数・`settings.json` の `env` の `ANTHROPIC_API_KEY`。なければ Nterm の設定画面で入力し、DPAPI で暗号化して `credentials.json` に保存 | 初版 |
+| **Anthropic API（API キー）** | 私用 PC | 環境変数・`settings.json` の `env` の `ANTHROPIC_API_KEY`。なければ Orca の設定画面で入力し、DPAPI で暗号化して `credentials.json` に保存 | 初版 |
 | Claude Code の CLI（サブスクリプション） | 私用 PC | CLI 自身のログイン | 将来検討（8 の Y 案と同じ仕組み。MCP サーバ・CLI の組み込みツールの無効化・承認の連携が必要） |
 
 * 選択の順序: `CLAUDE_CODE_USE_BEDROCK` が有効なら Bedrock、そうでなければ Anthropic API。
-* サブスクリプション（Pro / Max）のログイン情報（`~/.claude/.credentials.json` 等）を Nterm が流用して API を直接呼ぶことはしない（公式アプリ以外での利用は認められていないため）。
+* サブスクリプション（Pro / Max）のログイン情報（`~/.claude/.credentials.json` 等）を Orca が流用して API を直接呼ぶことはしない（公式アプリ以外での利用は認められていないため）。
 * Bedrock と Anthropic API はリクエストの形式がほぼ同じ（Messages API）。違いはエンドポイント・認証ヘッダ・モデル ID の形式のみ。
 
 ### 8.0 X 案の実装メモ（Bedrock）
-* 通信先は Bedrock Runtime のエンドポイントのみ（`https://bedrock-runtime.<region>.amazonaws.com`）。Nterm（Rust 側）から HTTPS で呼ぶ。
-* **Bedrock の設定は Claude Code の設定ファイル（`%USERPROFILE%\.claude\settings.json`）の `env` から読む。** 社用 PC では Claude Code 用に設定済みのため、Nterm に同じ設定を二重に持たせない。
+* 通信先は Bedrock Runtime のエンドポイントのみ（`https://bedrock-runtime.<region>.amazonaws.com`）。Orca（Rust 側）から HTTPS で呼ぶ。
+* **Bedrock の設定は Claude Code の設定ファイル（`%USERPROFILE%\.claude\settings.json`）の `env` から読む。** 社用 PC では Claude Code 用に設定済みのため、Orca に同じ設定を二重に持たせない。
   * 読む項目（想定）: `CLAUDE_CODE_USE_BEDROCK`・`AWS_REGION`・`AWS_BEARER_TOKEN_BEDROCK`（API キー）・`ANTHROPIC_MODEL`（モデル ID）・`HTTPS_PROXY` / `NO_PROXY`。
   * 同じ名前の環境変数が設定されていれば、Claude Code と同様にそちらを優先する。
-  * Nterm はこのファイルを**読むだけ**で、書き換えない。読み取りは AI 機能を使うときだけ行い、トークンは画面・ログ・監査ログに出さない。
-  * `CLAUDE_CODE_USE_BEDROCK` が有効なのに必要な項目（リージョン・トークン）が足りない場合は、AI 機能を無効にして理由を表示する（Bedrock の設定を Nterm 側で手入力する画面は持たない）。`CLAUDE_CODE_USE_BEDROCK` が有効でない場合は Anthropic API を使う（8.0a）。
+  * Orca はこのファイルを**読むだけ**で、書き換えない。読み取りは AI 機能を使うときだけ行い、トークンは画面・ログ・監査ログに出さない。
+  * `CLAUDE_CODE_USE_BEDROCK` が有効なのに必要な項目（リージョン・トークン）が足りない場合は、AI 機能を無効にして理由を表示する（Bedrock の設定を Orca 側で手入力する画面は持たない）。`CLAUDE_CODE_USE_BEDROCK` が有効でない場合は Anthropic API を使う（8.0a）。
   * `ANTHROPIC_MODEL` がない場合の既定のモデル ID は実装時に決める。
 * **認証は API キー（`AWS_BEARER_TOKEN_BEDROCK`）方式で確定**（社用 PC で確認済み）。`Authorization: Bearer` で送るだけでよく、SigV4 の署名は実装しない。
 * **プロキシ**: 社用 PC では設定されている可能性が高いため、初版から `HTTPS_PROXY` / `NO_PROXY` に対応する。
   * プロキシが認証を要求する場合、URL に埋め込んだユーザー名・パスワード（`http://user:pass@host:port`）には対応する。NTLM / Kerberos 認証のプロキシには HTTP クライアントが対応しないため、その場合は別途検討する。
   * 社内のプロキシが通信を復号して検査している（独自のルート証明書を使う）場合に備え、証明書の検証には **Windows の証明書ストア**を使う。Claude Code 側で `NODE_EXTRA_CA_CERTS` を設定している場合は、その証明書も追加で読み込む。
-* エージェントのループ（API 呼び出し → ツール呼び出しの承認・実行 → 結果を返す → 繰り返し）は Nterm 内で処理する。ストリーミング応答に対応し、ループの回数に上限を設ける。
+* エージェントのループ（API 呼び出し → ツール呼び出しの承認・実行 → 結果を返す → 繰り返し）は Orca 内で処理する。ストリーミング応答に対応し、ループの回数に上限を設ける。
 
 | 方式 | 内容 | 良い点 | 懸念 |
 | :--- | :--- | :--- | :--- |
-| **X. Nterm が Bedrock の API を直接呼ぶ（採用）** | Nterm 内でエージェントのループ（API 呼び出し・ツール実行）を処理する | ツールを Nterm が完全に管理できる（参照系以外は存在しない）。exe 単体で完結。MCP 不要 | Bedrock の設定（リージョン・モデル ID・トークン）を Nterm に持たせる（トークンは DPAPI で暗号化）。エージェントのループを自作する必要がある |
-| **Y. Claude Code（CLI）を子プロセスで動かす（不採用）** | Nterm が MCP サーバとしてツールを提供し、`claude` をヘッドレス（stream-json）で起動する | 社内で利用中の Claude Code の認証・Bedrock 設定をそのまま使える。エージェントのループを自作しなくてよい | PC に claude CLI が必要。**MCP の接続が社内で許可されるか不明**（許可されない場合は Y は成立しない）。CLI の組み込み能力を確実に封じる必要がある（下記） |
+| **X. Orca が Bedrock の API を直接呼ぶ（採用）** | Orca 内でエージェントのループ（API 呼び出し・ツール実行）を処理する | ツールを Orca が完全に管理できる（参照系以外は存在しない）。exe 単体で完結。MCP 不要 | Bedrock の設定（リージョン・モデル ID・トークン）を Orca に持たせる（トークンは DPAPI で暗号化）。エージェントのループを自作する必要がある |
+| **Y. Claude Code（CLI）を子プロセスで動かす（不採用）** | Orca が MCP サーバとしてツールを提供し、`claude` をヘッドレス（stream-json）で起動する | 社内で利用中の Claude Code の認証・Bedrock 設定をそのまま使える。エージェントのループを自作しなくてよい | PC に claude CLI が必要。**MCP の接続が社内で許可されるか不明**（許可されない場合は Y は成立しない）。CLI の組み込み能力を確実に封じる必要がある（下記） |
 
 ### 8.1 Y 案を採用する場合の必須対策（不採用のため参考）
 Claude Code はもともと手元の PC でファイルの読み書き・コマンド実行ができるため、起動時に以下をすべて行う（オプション名は実装前に手元のバージョンで確認する）。
@@ -131,20 +131,20 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 | 対策 | 内容 |
 | :--- | :--- |
 | 組み込みツールの無効化 | Bash / Read / Edit / Write / Web 系などを使えなくする（`--tools` / `--disallowedTools`） |
-| Nterm のツールのみ許可 | `--allowedTools "mcp__nterm__*"` |
+| Orca のツールのみ許可 | `--allowedTools "mcp__nterm__*"` |
 | 他の MCP サーバを読み込まない | `--strict-mcp-config` |
 | ユーザーの設定・hooks・プラグインを読み込まない | `--setting-sources` で制限し、作業フォルダは空の一時フォルダにする（CLAUDE.md 等も読まない） |
-| 承認を Nterm の UI で行う | `--permission-prompt-tool mcp__nterm__approve` |
+| 承認を Orca の UI で行う | `--permission-prompt-tool mcp__nterm__approve` |
 
-* MCP サーバは Nterm（GUI アプリ）内に置くため、**localhost の HTTP（127.0.0.1 のみで待ち受け・起動ごとのランダムなポートとトークンで認証）**を想定。
+* MCP サーバは Orca（GUI アプリ）内に置くため、**localhost の HTTP（127.0.0.1 のみで待ち受け・起動ごとのランダムなポートとトークンで認証）**を想定。
 * CLI のバージョンでオプションが変わり得るため、対応する最低バージョンを決めて起動時に確認する。
 * チャット開始ごとに CLI を起動するため、最初の応答まで 1〜2 秒程度かかる。
 
 ### 8.2 確認事項
 * 社内で MCP は使えない見込み → X 案に決定。
-* Bedrock を CLI / VS Code 拡張以外のアプリ（Nterm）から呼んでよいか（社内の承認と合わせて確認）。
+* Bedrock を CLI / VS Code 拡張以外のアプリ（Orca）から呼んでよいか（社内の承認と合わせて確認）。
 * 認証方式は API キー（`AWS_BEARER_TOKEN_BEDROCK`）で確認済み。
-* `settings.json` の `env` に `HTTPS_PROXY` / `HTTP_PROXY` / `NODE_EXTRA_CA_CERTS` はない（確認済み）。Claude Code は Windows のプロキシ設定を参照しないため、直接接続か OS の環境変数のプロキシで Bedrock に届いている。Nterm も環境変数を参照するので同じ経路で接続できる見込み。
+* `settings.json` の `env` に `HTTPS_PROXY` / `HTTP_PROXY` / `NODE_EXTRA_CA_CERTS` はない（確認済み）。Claude Code は Windows のプロキシ設定を参照しないため、直接接続か OS の環境変数のプロキシで Bedrock に届いている。Orca も環境変数を参照するので同じ経路で接続できる見込み。
 
 ## 9. 開発の進め方（AI なし版と AI あり版の分離）
 
@@ -165,7 +165,7 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 | 項目 | 状態 |
 | :--- | :--- |
 | AI にできることは参照のみ | 決定 |
-| AI はコマンドを書かず、Nterm が固定の形で組み立てて隠しシェルで実行（経路 B'） | 決定 |
+| AI はコマンドを書かず、Orca が固定の形で組み立てて隠しシェルで実行（経路 B'） | 決定 |
 | su 後のユーザー（root 等）の権限で読む | 決定（ファイルツリーと同じ） |
 | 機密ファイルの読み取り禁止・伏せ字 | 行わない（決定） |
 | トークン消費は範囲読み・末尾読み・絞り込みで抑える | 決定 |
@@ -173,13 +173,65 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 | 本番サーバでも利用可能 | 決定 |
 | 権限モデル（既定は毎回確認）・監査ログ | 決定 |
 | チャットはウィンドウに1つ・右サイドパネル | 決定 |
-| 接続方式 | X 案（Nterm が Bedrock を直接呼ぶ）に決定 |
+| 接続方式 | X 案（Orca が Bedrock を直接呼ぶ）に決定 |
 | MCP が社内で使えるか | 使えない見込み（Y 案は不採用） |
 | Bedrock の設定は Claude Code の `settings.json` の `env` から読む | 決定 |
 | 認証方式 | API キー（`AWS_BEARER_TOKEN_BEDROCK`）で確定 |
 | プロキシ対応（`HTTPS_PROXY`・Windows の証明書ストア） | 決定（初版から対応） |
 | プロキシの詳細 | `settings.json` には設定なし（Claude Code と同じ経路で接続できる見込み） |
-| Nterm から Bedrock を呼んでよいか | 可（確認済み） |
+| Orca から Bedrock を呼んでよいか | 可（確認済み） |
 | AI なし版・AI あり版の分け方 | Cargo feature で切り替え（決定） |
 | Bedrock 以外の接続先 | Anthropic API（API キー）を初版で対応。Claude Code の CLI（サブスクリプション）は将来検討 |
 | AI あり版の社内利用 | **承認待ち** |
+
+## 11. 実装計画
+
+### 11.1 全体構成
+
+```
+[フロント] components/ai/（AI あり版のみ）
+   ChatPanel（右パネル）・承認カード・設定（API キー入力）
+        │ invoke / event
+[Rust] ai/（feature "ai" のみ）
+   config.rs    … settings.json・環境変数・credentials.json から接続先を決める
+   provider.rs  … Bedrock / Anthropic API の呼び分け（HTTP は reqwest）
+   agent.rs     … ループ（送信 → tool_use → 承認待ち → 実行 → tool_result → 繰り返し）
+   tools.rs     … ツール定義・引数の検証・コマンドの組み立て
+   audit.rs     … 監査ログ
+        │ SshCommand（既存のセッションスレッド経由）
+[Rust] 共通（AI なし版にも含む）
+   reader_shell.rs … 隠しシェル（switched_lister.rs を一般化）
+   terminal_buffer … ターミナルの直近の出力（ログ整形と同じ処理でリングバッファに保持）
+```
+
+### 11.2 段階
+
+| 段階 | 内容 | 主なテスト |
+| :--- | :--- | :--- |
+| **P0. 土台** | Cargo feature `ai`（reqwest 等は optional 依存）。フロントは `VITE_NTERM_AI` で切り替え、AI なし版では `components/ai/` をバンドルから除外。ビルドスクリプト（`build` / `build:ai`）。AI なし exe に `bedrock-runtime`・`api.anthropic.com` 等の文字列がないことを確認するスクリプト | 両方の構成で `cargo test`・`cargo clippy`・型チェックが通る |
+| **P1. 読み取りの仕組み（共通部分）** | `switched_lister.rs` を `reader_shell.rs` に一般化：① su の手順がないサーバでも隠しシェルを開く（ログインユーザーで読む）② 一覧以外のコマンドも実行して出力をそのまま返す ③ 目印にジョブごとの乱数を入れる（ファイルの中に目印の文字列があっても偽装できないように）④ 出力の上限（超えたら打ち切り、打ち切ったことを返す）⑤ サーバの文字コードで変換。ターミナル出力のリングバッファ（直近 2,000 行程度） | 目印の偽装・上限での打ち切り・文字コード・su なしの準備完了。ファイルツリーの既存テストが通ること |
+| **P2. ツールと接続先（Rust）** | `tools.rs`：引数の検証とコマンドの組み立て（3.2 の規則）。`config.rs`：接続先の決定。`provider.rs`：Bedrock（`/model/{id}/invoke`・Bearer）と Anthropic（`/v1/messages`・`x-api-key`）のリクエストと応答の変換。`agent.rs`：ループ（回数上限・会話の中止）。承認はフロントへイベントで問い合わせて返事を待つ。`audit.rs` | コマンド組み立て（クォート・`--`・数値の上限・制御文字の拒否）。settings.json の読み取り（Bedrock 有効・不足・なし）。プロバイダはモックで差し替えてループを検証（ツール呼び出し → 承認 → 結果 → 最終応答、拒否、回数上限、中止） |
+| **P3. チャット UI** | 右パネル（幅変更・開閉）、メッセージ表示（Markdown。生の HTML は描画しない）、ツール呼び出しの折りたたみ表示、承認カード（ツール・サーバ・読み取りユーザー・引数、root は強調）、ツールごとの許可設定、「ターミナルに挿入」（Enter は送らない）、選択範囲を引用して聞く、API キーの入力画面 | 型チェック。手動確認（社用 PC で Bedrock、私用 PC で Anthropic API） |
+| **P4. 仕上げ** | ストリーミング表示（必要なら）、README（AI あり版の使い方・送信されるデータの説明）、リリース手順（2 種類の zip） | — |
+
+### 11.3 設計上の判断
+
+* **HTTP は Rust 側で行う**（WebView から直接呼ぶと CORS・CSP の制約があり、キーをフロントに渡すことにもなるため）。キーはフロントに渡さない。
+* **初版は非ストリーミング**（応答が全部そろってから表示）。Bedrock のストリーミングは AWS 独自のバイナリ形式（event-stream）のデコードが必要なため、P4 で必要性を見て判断する。
+* **`read_terminal` は Rust 側のリングバッファから返す**（ログ整形と同じ処理で ANSI 除去済み）。vim・top 等の全画面アプリの画面は正確には再現できない（ログと同じ制限）。
+* **目印は乱数入り**：今のツリーの目印は連番で予測できる。AI はファイルの中身を読むため、中身に目印を書かれて出力を途中で打ち切られる・偽の結果を混ぜられることを防ぐ。
+* **出力の上限はサーバ側でも掛ける**（`| head -c <上限+1>`）。巨大なファイルを全部転送してから捨てることを避ける。
+* **Tauri のコマンド登録**：`generate_handler!` の中でコマンドごとに `#[cfg(feature = "ai")]` を付ける（tauri-macros 2.7 で対応を確認済み）。
+
+### 11.5 P0 の結果（完了）
+* Cargo feature `ai`・`src-tauri/src/ai/`・`.env.ai`（`VITE_NTERM_AI=1`）。
+* **AI あり版を正規版とする**：`tauri.conf.json` が AI あり版（`Orca`、`build.features: ["ai"]`、`frontendDist: ../dist-ai`）。AI なし版は `tauri.noai.conf.json` を重ねてビルドする（`Orca-NoAI`、`features: []`、`frontendDist: ../dist`）。`bun run tauri:dev:noai` / `bun run tauri:build:noai`。
+* フロントは `import.meta.env.VITE_NTERM_AI === "1"` のときだけ `lazy(() => import("./components/ai/AiPanel"))` を作る。AI なし版のバンドルに `AiPanel` のチャンクが出力されないことを確認済み。
+* `scripts/check-no-ai.ts`（`bun run check:no-ai`）：AI なし版の `dist/` と `Orca.exe` に AI 固有の文字列がないことを確認する。AI あり版に対して実行すると失敗する（検出できる）ことも確認済み。
+  * Rust のコマンド名は exe 内で分割されて格納されるため検出に使えない。exe 側は `ai/mod.rs` の `BUILD_MARKER`（`nterm-ai-build`）で検出する。
+* exe の出力先は両方とも `src-tauri/target/release/`。Windows はファイル名の大文字・小文字を区別しないため、cargo の出力 `orca.exe` と `Orca.exe` は同じファイルで、**Orca-NoAI をビルドすると `Orca.exe` は `Orca-NoAI.exe` に置き換わる**。出力先（`CARGO_TARGET_DIR`）を分けると依存関係（OpenSSL のソースビルド・Perl が必要）から作り直しになるため分けない。リリース時は「Orca-NoAI をビルド → `check:no-ai` → Orca をビルド」の順で行えば両方が残る（P4 でスクリプト化）。
+* AI なし版の exe 名は、大文字・小文字の違いだけの名前（例: `oRcA.exe`）にすると Windows では `Orca.exe` と同じファイルになるため、`Orca-NoAI` とした。
+
+### 11.4 決定事項
+* 「AI に聞く」の操作：**Ctrl+Shift+A で選択範囲をチャットに引用＋チャット欄の「選択範囲を引用」ボタン**。右クリックは貼り付けのまま。
+* リリースの形：**AI あり版（`Orca`、正規版）と AI なし版（`Orca-NoAI`）の 2 つの zip を同じリリースに並べる。**

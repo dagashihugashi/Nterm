@@ -1,9 +1,11 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TerminalComponent } from "./components/Terminal";
 import { TabBar, moveTab, type Tab } from "./components/TabBar";
 import { ServerSidebar } from "./components/ServerSidebar";
+import { FolderTree, Server, Sparkles } from "lucide-react";
 import { Sidebar, type SidebarView } from "./components/Sidebar";
+import { ActivityBar, type ActivityItem } from "./components/ActivityBar";
 import { RemoteFileTree, type TreeRefreshRequest } from "./components/RemoteFileTree";
 import { TransferPanel } from "./components/TransferPanel";
 import { ConflictDialog } from "./components/ConflictDialog";
@@ -59,6 +61,13 @@ const DEFAULT_ENCODING = "UTF-8";
 /** 貼り付け確認ダイアログで表示する行数 */
 const PASTE_PREVIEW_LINES = 10;
 
+/**
+ * AI チャットパネル（AI あり版のみ）。条件はビルド時に定数になるため、
+ * AI なし版では components/ai/ がバンドルに含まれない（scripts/check-no-ai.ts で確認）
+ */
+const AiPanel =
+  import.meta.env.VITE_NTERM_AI === "1" ? lazy(() => import("./components/ai/AiPanel")) : null;
+
 /** 指定タブのログ開始ダイアログを閉じる（タブを閉じた・切断された場合） */
 const withoutLogDialogFor = (tabId: string) => (prev: DialogState): DialogState =>
   prev?.kind === "start-log" && prev.tabId === tabId ? null : prev;
@@ -71,6 +80,8 @@ function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [sidebarView, setSidebarView] = useState<SidebarView>("servers");
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   /** タブIDごとの SSH セッション（Files ビューで現在のタブのセッションを使う） */
   const [tabSessions, setTabSessions] = useState<Record<string, SessionInfo>>({});
   /** ログ取得中のタブIDと書き込み先のパス */
@@ -347,6 +358,38 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  /** アクティビティバーでの切り替え。表示中のものをもう一度押すとサイドバーを閉じる（VS Code と同様） */
+  const selectSidebarView = (view: SidebarView) => {
+    if (isSidebarOpen && sidebarView === view) {
+      setIsSidebarOpen(false);
+      return;
+    }
+    setSidebarView(view);
+    setIsSidebarOpen(true);
+  };
+  const sidebarItem = (view: SidebarView, label: string, Icon: ActivityItem["Icon"]): ActivityItem => ({
+    id: view,
+    label,
+    Icon,
+    isActive: isSidebarOpen && sidebarView === view,
+    onClick: () => selectSidebarView(view),
+  });
+  const activityItems: ActivityItem[] = [
+    sidebarItem("servers", "Servers", Server),
+    sidebarItem("files", "File Tree", FolderTree),
+    ...(AiPanel
+      ? [
+          {
+            id: "ai",
+            label: "AI",
+            Icon: Sparkles,
+            isActive: isAiPanelOpen,
+            onClick: () => setIsAiPanelOpen((open) => !open),
+          },
+        ]
+      : []),
+  ];
+
   const logDialogTab = dialog?.kind === "start-log" ? tabs.find((t) => t.id === dialog.tabId) : undefined;
   const logDialogSession = logDialogTab ? tabSessions[logDialogTab.id] : undefined;
 
@@ -368,46 +411,47 @@ function App() {
       }
     >
       {/* Main Content Area（サイドバーとターミナルを角丸のカードとして並べる） */}
-      <div className="flex flex-1 overflow-hidden gap-1.5 p-1.5">
-        <Sidebar
-          view={sidebarView}
-          onViewChange={setSidebarView}
-          footer={
-            <TransferPanel
-              transfers={transfers.transfers}
-              onCancel={transfers.cancel}
-              onDismiss={transfers.dismiss}
-              onClearFinished={transfers.clearFinished}
-            />
-          }
-        >
-          {sidebarView === "servers" && (
-            <ServerSidebar
-              servers={servers}
-              loadError={loadError}
-              onConnect={openSession}
-              onAddClick={() => setDialog({ kind: "add-server" })}
-              onEdit={(server) => setDialog({ kind: "edit-server", server })}
-              onDelete={(server) => setDialog({ kind: "delete-server", server })}
-            />
-          )}
-          {sidebarView === "files" &&
-            (connectedSessionId && transferTarget ? (
-              <RemoteFileTree
-                // 表示ユーザが変わったら（su 完了後）作り直して読み込み直す
-                key={`${connectedSessionId}:${tabTreeUsers[activeTab] ?? ""}`}
-                sessionId={connectedSessionId}
-                viewUser={tabTreeUsers[activeTab] ?? null}
-                onUpload={(paths, dir) => void transfers.upload(transferTarget, paths, dir)}
-                onDownload={(path, dir) => void transfers.download(transferTarget, path, dir)}
-                refreshRequest={treeRefresh?.sessionId === connectedSessionId ? treeRefresh : null}
+      <div className="flex flex-1 overflow-hidden gap-1.5 p-1.5 pl-0.5">
+        <ActivityBar items={activityItems} />
+        {isSidebarOpen && (
+          <Sidebar
+            footer={
+              <TransferPanel
+                transfers={transfers.transfers}
+                onCancel={transfers.cancel}
+                onDismiss={transfers.dismiss}
+                onClearFinished={transfers.clearFinished}
               />
-            ) : (
-              <div className="px-4 py-3 text-xs text-gray-500">
-                Select a connected tab to browse its files.
-              </div>
-            ))}
-        </Sidebar>
+            }
+          >
+            {sidebarView === "servers" && (
+              <ServerSidebar
+                servers={servers}
+                loadError={loadError}
+                onConnect={openSession}
+                onAddClick={() => setDialog({ kind: "add-server" })}
+                onEdit={(server) => setDialog({ kind: "edit-server", server })}
+                onDelete={(server) => setDialog({ kind: "delete-server", server })}
+              />
+            )}
+            {sidebarView === "files" &&
+              (connectedSessionId && transferTarget ? (
+                <RemoteFileTree
+                  // 表示ユーザが変わったら（su 完了後）作り直して読み込み直す
+                  key={`${connectedSessionId}:${tabTreeUsers[activeTab] ?? ""}`}
+                  sessionId={connectedSessionId}
+                  viewUser={tabTreeUsers[activeTab] ?? null}
+                  onUpload={(paths, dir) => void transfers.upload(transferTarget, paths, dir)}
+                  onDownload={(path, dir) => void transfers.download(transferTarget, path, dir)}
+                  refreshRequest={treeRefresh?.sessionId === connectedSessionId ? treeRefresh : null}
+                />
+              ) : (
+                <div className="px-4 py-3 text-xs text-gray-500">
+                  Select a connected tab to browse its files.
+                </div>
+              ))}
+          </Sidebar>
+        )}
 
         {/* Terminal Area（タブバーとターミナルで1枚のカード） */}
         <div className="flex-1 min-w-0 flex flex-col rounded-lg border border-white/10 overflow-hidden bg-[var(--nt-bg)]">
@@ -446,6 +490,12 @@ function App() {
             ))}
           </div>
         </div>
+
+        {AiPanel && isAiPanelOpen && (
+          <Suspense fallback={null}>
+            <AiPanel onClose={() => setIsAiPanelOpen(false)} />
+          </Suspense>
+        )}
       </div>
 
       {/* Status Bar */}

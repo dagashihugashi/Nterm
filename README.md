@@ -1,4 +1,4 @@
-# Nterm
+# Orca
 
 Windows 向けの SSH ターミナルクライアントです（Tera Term / RLogin の代替）。
 インストール不要の exe 1 つで動作し、設定ファイルはすべて exe と同じフォルダに保存されます。
@@ -10,7 +10,7 @@ Windows 向けの SSH ターミナルクライアントです（Tera Term / RLog
 
 ## 使い始め方
 
-1. `Nterm.exe` を**書き込み可能な任意のフォルダ**に置いて起動します（インストール不要）。
+1. `Orca.exe` を**書き込み可能な任意のフォルダ**に置いて起動します（インストール不要）。
    - 設定ファイルを exe と同じフォルダに作成するため、`C:\Program Files` などの書き込みできない場所は避けてください。
 2. 左のサイドバーの **＋** からサーバを追加します。
 3. サーバ名をクリックすると、新しいタブで接続します。
@@ -74,7 +74,8 @@ Windows 向けの SSH ターミナルクライアントです（Tera Term / RLog
 
 ## 注意事項・制限
 
-- SFTP（ファイルツリー・転送）は**ログインしたユーザーの権限**で動作します。`su` で切り替えた後のユーザーの権限ではありません（root のファイルは `/tmp` 経由でやり取りしてください）。
+- ファイルツリーは、ユーザー切り替えの自動化を設定している場合は**切り替えた後のユーザー（root 等）の権限**で表示します（表示中のユーザーはツリーの上部に「as root」のように表示）。ターミナル内で手動で `su` した場合は追従しません。
+- ファイル転送は**ログインしたユーザーの権限**で動作します（root のファイルは `/tmp` 経由でやり取りしてください）。
 - フォルダごとの転送、SCP、ポートフォワーディング、踏み台（ProxyJump）経由の接続には対応していません。
 - `vi` / `top` などの全画面アプリの画面は、ログに正しく残りません。
 
@@ -83,7 +84,17 @@ Windows 向けの SSH ターミナルクライアントです（Tera Term / RLog
 ```sh
 bun install
 bun run tauri dev                  # 開発用に起動（設定は src-tauri/target/debug に保存）
-bun run tauri build --no-bundle    # src-tauri/target/release/Nterm.exe を作成
+bun run tauri build --no-bundle    # src-tauri/target/release/Orca.exe を作成
 ```
+
+`Orca` は AI あり版（正規版。AI 機能は開発中、設計は [AI.md](AI.md)）です。AI 機能を含まない `Orca-NoAI` は次のコマンドで作ります。
+
+```sh
+bun run tauri:dev:noai                 # 開発用に起動
+bun run tauri:build:noai --no-bundle   # src-tauri/target/release/Orca-NoAI.exe を作成
+bun run check:no-ai                    # Orca-NoAI.exe と dist/ に AI のコードが含まれていないことを確認
+```
+
+フロントエンドの出力先は分けています（Orca は `dist-ai/`、Orca-NoAI は `dist/`）。exe は同じ `src-tauri/target/release/` に出力し、Windows はファイル名の大文字・小文字を区別しないため、cargo の出力 `orca.exe` と `Orca.exe` は同じファイルです。**両方が必要な場合は Orca-NoAI → Orca の順にビルドしてください**（逆の順にすると、Orca-NoAI のビルドで `Orca.exe` が `Orca-NoAI.exe` に置き換わります）。
 
 設計資料: [RequirementsSpecification.md](RequirementsSpecification.md) / [Tech-stack.md](Tech-stack.md) / [TODO.md](TODO.md)
