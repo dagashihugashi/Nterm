@@ -21,6 +21,14 @@ impl TerminalCodec {
         })
     }
 
+    /// 同じ文字コードの、受信途中の状態を持たない新しい変換器（別のチャネル用）
+    pub fn fresh(&self) -> Self {
+        Self {
+            encoding: self.encoding,
+            decoder: self.encoding.new_decoder_without_bom_handling(),
+        }
+    }
+
     /// 受信バイト列をデコードする。末尾の不完全なマルチバイト文字は次回呼び出しまで保持される。
     pub fn decode(&mut self, bytes: &[u8]) -> String {
         let capacity = self
@@ -92,6 +100,16 @@ mod tests {
         let first = codec.decode(&bytes[..1]);
         let rest = codec.decode(&bytes[1..]);
         assert_eq!(format!("{first}{rest}"), "日本");
+    }
+
+    #[test]
+    fn fresh_codec_keeps_the_encoding_but_not_the_partial_input() {
+        let mut codec = TerminalCodec::new(Some("Shift_JIS")).unwrap();
+        // 1 バイト目だけ受信した状態
+        assert_eq!(codec.decode(&[0x93]), "");
+        let mut fresh = codec.fresh();
+        assert_eq!(fresh.decode(&[0x93, 0xFA]), "日");
+        assert_eq!(fresh.encode("本"), vec![0x96, 0x7B]);
     }
 
     #[test]

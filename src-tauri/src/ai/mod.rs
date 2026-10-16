@@ -2,6 +2,8 @@
 //!
 //! AI なし版のビルドにはこのモジュールを含めない。
 
+mod terminal_buffer;
+
 use serde::Serialize;
 
 /// AI あり版のビルドであることを示す目印。AI なし版の exe にこの文字列がないことを

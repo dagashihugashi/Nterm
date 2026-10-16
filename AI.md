@@ -232,6 +232,17 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 * exe の出力先は両方とも `src-tauri/target/release/`。Windows はファイル名の大文字・小文字を区別しないため、cargo の出力 `orca.exe` と `Orca.exe` は同じファイルで、**Orca-NoAI をビルドすると `Orca.exe` は `Orca-NoAI.exe` に置き換わる**。出力先（`CARGO_TARGET_DIR`）を分けると依存関係（OpenSSL のソースビルド・Perl が必要）から作り直しになるため分けない。リリース時は「Orca-NoAI をビルド → `check:no-ai` → Orca をビルド」の順で行えば両方が残る（P4 でスクリプト化）。
 * AI なし版の exe 名は、大文字・小文字の違いだけの名前（例: `oRcA.exe`）にすると Windows では `Orca.exe` と同じファイルになるため、`Orca-NoAI` とした。
 
+### 11.6 P1 の結果（完了）
+* `switched_lister.rs` を `reader_shell.rs` に一般化した。状態と処理（`ReaderCore`）をチャネルの読み書き（`ReaderShell`）から分け、テストでバイト列を流し込んで一連の動作を確認できるようにした。
+  * su の手順がなければログインユーザのまま即座に準備完了（`ReaderEvent::Ready { user: None }`）。ファイルツリーは従来どおり、su した場合のみ隠しシェルを使う。
+  * 要求は `ReaderRequest::List`（ツリー用）と `ReaderRequest::Run`（AI 用・feature `ai` のみ。標準エラーを含む出力・終了コード・打ち切りの有無を返す）。1 つずつ順に実行する。
+  * 目印は「連番＋乱数」（`RandomState::hash_one`、外部クレート不要）。ファイルの中に `__NTERM_END_1_0` 等が書かれていても終わりとみなさない（テストで確認）。
+  * 改行で終わらない出力の最後の行（終わりの目印と同じ行に付く）も内容として拾う。
+  * 出力の上限は文字の途中で切らない。コマンドと出力はサーバの文字コードで変換し、ターミナルで文字コードを切り替えると隠しシェルにも反映する（`TerminalCodec::fresh`）。
+  * 未確定: `Run` は `{ command ; } 2>&1` で囲むため、su 先のシェルが csh / tcsh の場合は動かない（bash / sh / ksh 等を想定）。
+* `ai/terminal_buffer.rs`（AI あり版のみ）：ログと同じ整形で直近 2,000 行を保持し、未確定の行（プロンプト）も含めて返す。
+* `Run` と `TerminalBuffer` の呼び出し元は P2 で作る。それまでは `#[expect(dead_code)]` を付けており、P2 で使い始めると外し忘れがエラーになる。
+
 ### 11.4 決定事項
 * 「AI に聞く」の操作：**Ctrl+Shift+A で選択範囲をチャットに引用＋チャット欄の「選択範囲を引用」ボタン**。右クリックは貼り付けのまま。
 * リリースの形：**AI あり版（`Orca`、正規版）と AI なし版（`Orca-NoAI`）の 2 つの zip を同じリリースに並べる。**

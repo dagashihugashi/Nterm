@@ -12,7 +12,7 @@ mod sftp;
 mod ssh_auth;
 mod ssh_client;
 mod switch_user;
-mod switched_lister;
+mod reader_shell;
 mod themes;
 mod transfer;
 

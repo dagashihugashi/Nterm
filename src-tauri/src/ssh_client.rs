@@ -17,7 +17,7 @@ use crate::session_log::SessionLog;
 use crate::sftp::{SftpClient, SftpRequest};
 use crate::ssh_auth::{self, Credential};
 use crate::switch_user::{Action as SwitchAction, SwitchStep, SwitchUserAutomation, SwitchUserNotice};
-use crate::switched_lister::{ListerEvent, SwitchedLister};
+use crate::reader_shell::{ReaderEvent, ReaderRequest, ReaderShell};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// 無通信時の Keepalive 送信間隔（ファイアウォール等による無通信切断を防ぐ）。
@@ -205,7 +205,7 @@ struct SessionLoop<'a> {
     /// ターミナルの切り替えで入力されたパスワード（ファイルツリー用の隠しシェルで再利用する。メモリ上のみ）
     entered_secrets: HashMap<String, String>,
     /// su した後のユーザの権限でファイル一覧を取得する隠しシェル（準備できるまでは SFTP を使う）
-    lister: Option<SwitchedLister>,
+    reader: Option<ReaderShell>,
 }
 
 fn run_session(
@@ -228,7 +228,7 @@ fn run_session(
         switch_user: setup.switch_user,
         lister_steps: setup.lister_steps,
         entered_secrets: HashMap::new(),
-        lister: None,
+        reader: None,
     };
     let result = state.run(commands);
     state.shutdown();
@@ -255,7 +255,7 @@ impl SessionLoop<'_> {
             };
             self.send_keepalive()?;
             self.tick_switch_user();
-            self.poll_lister();
+            self.poll_reader();
             if !wrote && !received {
                 thread::sleep(IDLE_SLEEP);
             }
@@ -305,7 +305,12 @@ impl SessionLoop<'_> {
                 }
                 Ok(SessionCommand::StopLog) => self.stop_log(),
                 // 旧デコーダが保持していた途中のマルチバイト文字は破棄される
-                Ok(SessionCommand::SetEncoding(codec)) => self.codec = codec,
+                Ok(SessionCommand::SetEncoding(codec)) => {
+                    if let Some(reader) = self.reader.as_mut() {
+                        reader.set_codec(codec.fresh());
+                    }
+                    self.codec = codec;
+                }
                 Ok(SessionCommand::SwitchUserSecret(answer)) => self.provide_switch_secret(answer),
                 Ok(SessionCommand::Disconnect) | Err(TryRecvError::Disconnected) => {
                     return Ok(Flow::Stop)
@@ -381,7 +386,7 @@ impl SessionLoop<'_> {
                 SwitchAction::Notify(SwitchUserNotice::Finished) => {
                     self.notify_switch(SwitchUserNotice::Finished);
                     // 切り替えが完了したら、ファイルツリーも同じユーザの権限で表示する
-                    self.start_lister();
+                    self.start_reader();
                 }
                 SwitchAction::Notify(notice) => self.notify_switch(notice),
             }
@@ -391,8 +396,8 @@ impl SessionLoop<'_> {
         }
     }
 
-    /// ファイルツリー用の隠しシェルを開き、ターミナルと同じ手順で su を始める
-    fn start_lister(&mut self) {
+    /// 隠しシェルを開き、ターミナルと同じ手順で su を始める
+    fn start_reader(&mut self) {
         let steps: Vec<SwitchStep> = self
             .lister_steps
             .iter()
@@ -406,29 +411,32 @@ impl SessionLoop<'_> {
             })
             .collect();
         match open_hidden_shell(self.session) {
-            Ok(channel) => self.lister = SwitchedLister::start(channel, steps, Instant::now()),
+            Ok(channel) => {
+                let codec = self.codec.fresh();
+                self.reader = Some(ReaderShell::start(channel, steps, codec, Instant::now()));
+            }
             Err(error) => self.notify_tree_user(None, Some(error)),
         }
     }
 
-    fn poll_lister(&mut self) {
-        let Some(lister) = self.lister.as_mut() else {
+    fn poll_reader(&mut self) {
+        let Some(reader) = self.reader.as_mut() else {
             return;
         };
-        match lister.poll(Instant::now()) {
+        match reader.poll(Instant::now()) {
             Ok(events) => {
                 for event in events {
                     match event {
-                        ListerEvent::Ready { user } => self.notify_tree_user(Some(user), None),
-                        ListerEvent::Failed { message } => {
-                            self.lister = None;
+                        ReaderEvent::Ready { user } => self.notify_tree_user(user, None),
+                        ReaderEvent::Failed { message } => {
+                            self.reader = None;
                             self.notify_tree_user(None, Some(message));
                         }
                     }
                 }
             }
             Err(message) => {
-                self.lister = None;
+                self.reader = None;
                 self.notify_tree_user(None, Some(message));
             }
         }
@@ -441,8 +449,14 @@ impl SessionLoop<'_> {
 
     /// 一覧の取得は、su 済みの隠しシェルが使えればそちらで（su した後の権限）、なければ SFTP で行う
     fn handle_sftp(&mut self, request: SftpRequest) {
-        match (request, self.lister.as_mut().filter(|lister| lister.is_ready())) {
-            (SftpRequest::List { path, reply }, Some(lister)) => lister.enqueue(path, reply),
+        let switched_reader = self
+            .reader
+            .as_mut()
+            .filter(|reader| reader.is_ready() && reader.user().is_some());
+        match (request, switched_reader) {
+            (SftpRequest::List { path, reply }, Some(reader)) => {
+                reader.enqueue(ReaderRequest::List { dir: path, reply })
+            }
             (request, _) => self.sftp.handle(self.session, request),
         }
     }
@@ -479,12 +493,12 @@ impl SessionLoop<'_> {
         // SFTP チャネルはセッションを閉じる前に、ブロッキングモードで解放する
         self.session.set_blocking(true);
         drop(self.sftp);
-        drop(self.lister);
+        drop(self.reader);
         close(self.session, &mut self.channel);
     }
 }
 
-/// ファイルツリー用の隠しシェル（PTY 付き）を開く。開く間だけブロッキングにする。
+/// 隠しシェル（PTY 付き）を開く。開く間だけブロッキングにする。
 fn open_hidden_shell(session: &Session) -> Result<Channel, String> {
     session.set_blocking(true);
     let result = (|| -> Result<Channel, ssh2::Error> {
@@ -495,7 +509,7 @@ fn open_hidden_shell(session: &Session) -> Result<Channel, String> {
         Ok(channel)
     })();
     session.set_blocking(false);
-    result.map_err(|e| format!("failed to open a shell for the file tree: {e}"))
+    result.map_err(|e| format!("failed to open the reader shell: {e}"))
 }
 
 /// 切り替えに成功したパスワードを保存する（remember = false なら保存済みの値を削除する）
