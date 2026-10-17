@@ -459,6 +459,18 @@ function App() {
           "--nt-gutter": `color-mix(in srgb, ${appTheme.sidebarBackground} 65%, #000)`,
           // スクロールバーのつまみの色（サイドバーの色を明るくしたもの）
           "--nt-scrollbar-thumb": `color-mix(in srgb, ${appTheme.sidebarBackground} 70%, #fff)`,
+          // 控えめな文字・さらに控えめな文字（文字色をサイドバーの色に寄せたもの。明るいテーマでも読める）
+          "--nt-fg-muted": `color-mix(in srgb, ${appTheme.foreground} 78%, ${appTheme.sidebarBackground})`,
+          "--nt-fg-subtle": `color-mix(in srgb, ${appTheme.foreground} 58%, ${appTheme.sidebarBackground})`,
+          // 枠線・コード等の下地・ホバー（文字色を薄く重ねたもの）
+          "--nt-border": `color-mix(in srgb, ${appTheme.foreground} 16%, transparent)`,
+          "--nt-surface": `color-mix(in srgb, ${appTheme.foreground} 7%, transparent)`,
+          "--nt-hover": `color-mix(in srgb, ${appTheme.foreground} 12%, transparent)`,
+          "--nt-input-bg": appTheme.background,
+          // 状態の色（ターミナルの明るい色を使う）
+          "--nt-danger": appTheme.brightRed,
+          "--nt-warning": appTheme.brightYellow,
+          "--nt-success": appTheme.brightGreen,
         } as React.CSSProperties
       }
     >

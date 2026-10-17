@@ -475,9 +475,13 @@ pub fn run() {
             #[cfg(feature = "ai")]
             ai::chat::ai_reset,
             #[cfg(feature = "ai")]
-            ai::chat::ai_save_api_key,
+            ai::chat::ai_list_sessions,
             #[cfg(feature = "ai")]
-            ai::chat::ai_delete_api_key
+            ai::chat::ai_resume,
+            #[cfg(feature = "ai")]
+            ai::chat::ai_load_history,
+            #[cfg(feature = "ai")]
+            ai::chat::ai_model_options
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

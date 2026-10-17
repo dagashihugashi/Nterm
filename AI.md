@@ -1,8 +1,10 @@
 # AI 対応
 
-> **ステータス: 実装する方針で決定（AI 以外の機能を先に実装）**
+> **ステータス: 実装済み（Claude Code 連携。12 章）・AI あり版の社内利用は承認待ち**
 > 業務サーバのデータを AI サービスへ送信する機能のため、作成者個人の判断だけで社内利用を決めない。
 > AI なし版と AI あり版を分けて開発し（「9. 開発の進め方」参照）、AI あり版の社内利用は承認を得てから判断する。
+>
+> **現在の方式は 12 章（Orca が Claude Code を動かし、PC の中で MCP サーバを立てる）。** 8 章の X 案（Orca が Bedrock を直接呼ぶ）と 11 章の P2・P3 はその前の方式で、検討と実装の経緯として残している（コードは削除済み）。
 
 ---
 
@@ -62,15 +64,24 @@
 | `search_file(session, path, pattern, context)` | 一致行と前後数行だけを返す | `grep -F -n -C <N> -e '<語>' -- '<path>'` |
 | `read_terminal(session, lines)` | ターミナルの直近の出力（ANSI エスケープ除去済み・ログ整形と同じ処理） | （サーバへの通信なし。Orca の手元のバッファ） |
 
+* **サーバから外部への通信は行わない。** サーバで実行するのは上表の読み取りのコマンド（`ls` / `stat` / `sed` / `tail` / `grep`）のみ。
+* AI が自由にコマンドを書いてサーバで実行する方式（`run_command`・毎回承認）も検討したが、サーバに対しては参照系のツールに絞る方針のため見送った。
+* **Web の検索は Claude Code の組み込みの道具（WebSearch）を使う**（12.2）。「これ何？」に検索なしでは答えられない場合に備える。
+  * 社内の規定：PC からインターネットを見ることは問題ないが、**インターネットへの書き込み・ダウンロードは禁止**。
+  * WebSearch は承認なし（検索は AI サービス側で行われ、PC からの通信は Claude のエンドポイントだけ）。
+  * **WebFetch（ページの取得）は使わせない**（`--tools` に入れない）。PC の Claude Code が直接 URL に接続するため、社内のセキュリティの警告の対象になり得る。また、読んだファイルやターミナルの出力に仕込まれた指示（プロンプトインジェクション）で、AI が URL のクエリ文字列にサーバのデータを載せて外部へ送る（＝書き込む）経路にもなるため。当初は毎回承認にしていたが、外すことにした。
+  * 以前の方式で使っていた `fetch_url`（Orca が PC から取得）と Anthropic のサーバ側の `web_search` / `web_fetch` は、12 章の方式への変更で削除した。
+
 * チャットは**ウィンドウに1つ**（複数サーバにまたがる作業を想定）。各ツールは対象のタブ（`session`）を引数で指定する。
 * **トークン消費の抑制**: ログ全体を渡さず、範囲読み・末尾読み・絞り込みで必要な部分だけを返す。1回あたりの返却サイズにも上限を設ける。
 * **ターミナルの出力は AI が読める**ことを重視する（「これ何？」のような使い方が主な用途のため）。
 
 ## 5. 権限・承認モデル（Claude Code と同様）
 
-* ツールごとに「**毎回確認**」「このセッション中は許可」「自動で許可」を選べる。**既定は毎回確認**。
-* 承認ダイアログには、実行するツール・対象サーバ・**読み取りユーザー**・引数（パス等）を表示する（root の場合は強調表示）。
-* AI のツール呼び出しと結果を**すべて監査ログに記録**する（エビデンス記録が目的のアプリと整合）。
+* ツールごとに「**毎回確認**」「このチャットでは許可」を選べる。**既定は毎回確認**。「自動で許可」の保存は settings.json の実装時に検討する。
+* 承認カードには、実行するツール・対象サーバ・**読み取りユーザー**・**サーバで実際に実行するコマンド**を表示する（本番環境・root の場合は赤で強調）。
+* 承認は 2 重に確かめる（12.2）：Claude Code が `approve` で確認し、さらに Orca の MCP サーバが「承認カードで許可した呼び出しか」を確かめてから実行する。
+* 監査ログは持たない（Claude Code がセッションに会話と道具の結果を保存する。サーバにもログを残さない）。
 
 ## 6. ハーネス・インジェクション対策
 
@@ -89,7 +100,9 @@
 * ツール実行の承認・拒否ボタン、提案されたコマンドの「ターミナルに挿入」ボタン。
 * **ターミナルで選択した範囲を AI に聞く**（Ctrl+Shift+A、またはチャット欄の「選択範囲を引用」ボタン。右クリックは貼り付けのまま）。選択範囲をチャットの入力欄に引用として入れ、「これ何？」をすぐ聞けるようにする。
 
-## 8. AI との接続方式（**X 案に決定**）
+## 8. AI との接続方式（**X 案に決定 → 12 章で Y 案に変更**）
+
+> 2026-10-17 に Y 案（Claude Code 連携）へ変更した（12 章）。社内の MCP の扱いの見込みが誤っていた（PC の中だけで完結する MCP は問題ない）ため。この章は検討の経緯として残す。
 
 * **X 案（Orca が Bedrock の API を直接呼ぶ）を採用する。** 社内では MCP サーバへの接続が認められない見込みで、通信先は Claude のエンドポイント（Bedrock）のみとなるため。Y 案は不採用（検討の経緯として下表と 8.1 を残す）。
 
@@ -170,21 +183,24 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 | 機密ファイルの読み取り禁止・伏せ字 | 行わない（決定） |
 | トークン消費は範囲読み・末尾読み・絞り込みで抑える | 決定 |
 | ターミナルの出力を AI が読める・選択範囲を AI に聞ける | 決定 |
+| サーバから外部への通信 | 行わない（決定） |
+| Web の検索・取得 | Claude Code の WebSearch（承認なし）のみ。WebFetch は使わせない（PC から直接接続し社内の警告の対象になり得る・データを URL に載せて送る経路になるため。12 章で変更） |
+| サーバで AI が書いたコマンドを実行する（`run_command`） | 見送り（サーバは参照系のツールのみ） |
 | 本番サーバでも利用可能 | 決定 |
-| 権限モデル（既定は毎回確認）・監査ログ | 決定 |
+| 権限モデル（既定は毎回確認） | 決定。承認は Claude Code と Orca の MCP サーバの 2 重で確かめる |
+| 監査ログ | 持たない（12 章で変更。Claude Code のセッションに残る） |
 | チャットはウィンドウに1つ・右サイドパネル | 決定 |
-| 接続方式 | X 案（Orca が Bedrock を直接呼ぶ）に決定 |
-| MCP が社内で使えるか | 使えない見込み（Y 案は不採用） |
-| Bedrock の設定は Claude Code の `settings.json` の `env` から読む | 決定 |
-| 認証方式 | API キー（`AWS_BEARER_TOKEN_BEDROCK`）で確定 |
-| プロキシ対応（環境変数の `HTTPS_PROXY` 等） | 決定（初版から対応） |
-| プロキシの詳細 | `settings.json` には設定なし（Claude Code と同じ経路で接続できる見込み） |
-| Orca から Bedrock を呼んでよいか | 可（確認済み） |
+| 接続方式 | **Y 案（Claude Code 連携・PC の中の MCP サーバ）に変更**（12 章）。X 案は廃止 |
+| MCP が社内で使えるか | PC の中だけで完結する MCP は問題ない（VS Code の拡張機能と同じ） |
+| 認証・Bedrock・プロキシ・モデル | Claude Code の設定をそのまま使う（Orca はトークンを読まない）。モデルの選択肢は `settings.json` のモデルの項目だけを読む |
 | AI なし版・AI あり版の分け方 | Cargo feature で切り替え（決定） |
-| Bedrock 以外の接続先 | Anthropic API（API キー）を初版で対応。Claude Code の CLI（サブスクリプション）は将来検討 |
+| 接続先 | Claude Code が使えるもの（社用 PC は Bedrock、私用 PC はサブスクリプション） |
+| PC 内のフォルダ・サーバ内を AI に読ませる範囲 | PC は利用者のフォルダを読ませてよい（社内で禁止されていない）。サーバはユーザの権限で見る範囲（利用者の責任） |
 | AI あり版の社内利用 | **承認待ち** |
 
 ## 11. 実装計画
+
+> X 案のときの計画と結果。P0・P1（feature の分離・隠しシェル）は今も使っている。P2・P3 の `config.rs`・`provider.rs`・`agent.rs`・`audit.rs`・API キーの入力画面は 12 章の方式への変更で削除した。
 
 ### 11.1 全体構成
 
@@ -277,3 +293,90 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 ### 11.4 決定事項
 * 「AI に聞く」の操作：**Ctrl+Shift+A で選択範囲をチャットに引用＋チャット欄の「選択範囲を引用」ボタン**。右クリックは貼り付けのまま。
 * リリースの形：**AI あり版（`Orca`、正規版）と AI なし版（`Orca-NoAI`）の 2 つの zip を同じリリースに並べる。**
+
+## 12. Claude Code 連携（方式の変更）
+
+> 2026-10-17 決定。8 章の X 案（Orca が Bedrock / Anthropic API を直接呼ぶ）を**やめ**、Y 案（Orca が Claude Code の CLI を動かし、PC の中で MCP サーバを立てる）に切り替える。
+> 理由：普段の Claude Code と同じ使い方（CLAUDE.md・設定・認証の引き継ぎ、セッションの保存と再開）をしつつ、サーバへの操作を Orca で制御したい。
+> 社内の MCP の扱い：VS Code の拡張機能も PC の中で MCP サーバ（`claude-vscode`）を立てており、PC の中だけで完結する操作は問題ない方針（ソースコードで説明できること）。
+
+### 12.1 構成
+```
+Orca（Rust）
+ ├─ claude CLI を起動（チャット 1 つにつき 1 プロセス。標準入出力で JSON の行をやりとり）
+ │    claude -p --input-format stream-json --output-format stream-json --verbose
+ │           --mcp-config <Orca の MCP サーバ> --strict-mcp-config
+ │           --setting-sources user --append-system-prompt <Orca の指示＋作業フォルダの CLAUDE.md>
+ │           --permission-mode default --permission-prompt-tool mcp__orca__approve
+ │           --tools Read,Grep,Glob,WebSearch --allowedTools WebSearch
+ │           [--resume <セッション ID>] [--model <モデル>]
+ │    作業フォルダ（cwd）は利用者が選ぶ（既定は Orca のフォルダ）
+ └─ MCP サーバ（127.0.0.1 の空いているポートで待ち受け・起動ごとのランダムな鍵で認証・標準ライブラリのみで実装）
+      ├─ サーバを読む道具：list_sessions / list_dir / stat / read_file / tail_file / search_file / read_terminal（従来どおり）
+      └─ approve：Claude Code が許可を求めたときに呼ばれ、Orca の承認カードで回答する
+```
+
+### 12.2 方針
+* 認証・Bedrock・サブスクリプション・ユーザの CLAUDE.md と設定（`~/.claude`）・会社の管理設定は Claude Code のものをそのまま使う。利用者自身（`~/.claude/settings.json`）の hooks は動く。
+* **作業フォルダの設定（`.claude/settings.json`・`settings.local.json`）は読ませない**（`--setting-sources user`）。`-p` ではフォルダの信頼の確認が省かれるため、ダウンロードしたリポジトリ等を作業フォルダにすると、その hooks・`apiKeyHelper`・`env`（通信先の書き換え）・`permissions` が確認なしで有効になり、`--tools` で道具を絞った外側で PC 上のコマンドが動いてしまうため（セキュリティのレビューで指摘。本物の Claude Code で、既定では作業フォルダの hook が動き、`--setting-sources user` では動かないことを確認）。
+  * その代わり、作業フォルダの CLAUDE.md（`CLAUDE.md`・`.claude/CLAUDE.md`・`CLAUDE.local.md`）の文章は、Orca が起動のたびに読んで `--append-system-prompt` で渡す（`ai/project_instructions.rs`。文章なので PC 上で何も動かない。1 ファイル 256 KiB まで読み、Windows の起動の引数の上限に収まるよう全体で 16,000 文字までにする。`@ファイル名` の取り込みは行わない）。
+* 手元の PC の組み込みの道具は**読み取り（Read / Grep / Glob）と Web の検索（WebSearch）だけ**（`--tools`）。Bash・ファイルの編集は使えないため、AI が PC から ssh してサーバを操作することもできない。サーバへの操作は Orca の MCP の読み取りの道具だけ。
+* WebSearch は承認なし。WebFetch は使わせない（4 章）。Bedrock で WebSearch が使えるかは Claude Code の仕様による。
+* Orca の読み取りの道具は従来どおり毎回確認（「このチャットでは許可」あり）。作業フォルダの外のファイルを Read する場合なども、Claude Code が `approve` を通して Orca に確認する。
+* **承認の 2 重の確認**：利用者の Claude Code の設定（`permissions.allow` や `defaultMode: bypassPermissions` 等）で確認が飛ばされないよう、
+  * 起動時に `--permission-mode default` を指定する。
+  * Orca の MCP サーバは、承認カードで許可した呼び出し（道具の名前と引数が同じもの）だけを 1 回だけ実行し、それ以外は断る。許可は新しい会話・中止で消え、使われないまま溜まらないよう 16 件までにする。
+* 他の MCP サーバは読み込まない（`--strict-mcp-config`）。
+* セッションは Claude Code が `~/.claude/projects` に保存する。Orca は一覧を読み取るだけ（書き込まない）で、「続きから再開」（`--resume`）に使う。同じ作業フォルダなら VS Code で始めたセッションも再開できる。
+* 監査ログはなくす（Claude Code がセッションを保存するため）。
+* `fetch_url` はなくす（当初は WebFetch で代わりにする予定だったが、WebFetch も外した。ページの取得はできない）。
+
+### 12.3 削除するもの
+`ai/agent.rs`・`ai/provider.rs`・`ai/config.rs`・`ai/server_tools.rs`・`ai/audit.rs`・`ai/web.rs`、依存の `ureq`、API キーの入力画面。
+
+### 12.4 段階
+| 段階 | 内容 |
+| :--- | :--- |
+| C1 | MCP サーバ（`ai/mcp_server.rs`：initialize / tools/list / tools/call / ping、Bearer 認証）。既存の読み取りの道具を MCP の形で提供。テストは JSON-RPC の要求と応答 |
+| C2 | Claude Code の起動と stream-json の解析（`ai/claude_cli.rs`：claude.exe の場所の探索・バージョン確認・窓を出さずに起動・行単位の解析）。`approve` と承認カードのつなぎ込み |
+| C3 | 画面：接続先の表示を Claude Code のバージョンに、作業フォルダの選択、セッションの一覧と再開、組み込みの道具（Read / WebSearch 等）の表示。API キーの入力画面を削除 |
+| C4 | 古い方式のコードの削除、ドキュメント、リリース |
+
+### 12.5 確認済み・未確認
+* 確認済み（手元の Claude Code 2.1.226）：`-p`・`--input-format` / `--output-format stream-json`・`--mcp-config`・`--strict-mcp-config`・`--tools`・`--resume`・`--setting-sources`。`--permission-prompt-tool` はヘルプに載らないが本体に存在する。
+* 未確認：社用 PC の Claude Code のバージョン（起動時に `claude --version` で確認し、古ければ案内を出す）。
+
+### 12.6 結果（C1〜C3 完了）
+* `ai/mcp_server.rs`：MCP サーバ（Streamable HTTP の JSON 応答のみ・127.0.0.1・起動ごとの 32 バイトの鍵（Windows の乱数）・Origin 付きの要求は拒否・本文 1 MiB まで・標準ライブラリのみ）。
+* `ai/claude_cli.rs`：claude.exe の探索（PATH → npm の本体 → `%USERPROFILE%\.local\bin`）・窓を出さずに起動・`CLAUDECODE` を外す（Claude Code の中から Orca を起動した場合に入れ子とみなされないように）・stream-json の解析。
+* `ai/chat.rs`：Claude Code のプロセスの管理（中止はプロセスの終了。次の質問で `--resume`）・Orca の道具（読み取り・`approve`）・承認の待ち合わせ。起動ごとに番号を振り、止めたプロセスからの遅れた通知を無視する。
+* `ai/sessions.rs`：`~/.claude/projects` のセッションの一覧（読み取りのみ。フォルダ名はドライブ名の大文字・小文字を区別せずに探す）。
+* 画面：作業フォルダの表示と変更（localStorage に記憶）・セッションの一覧と再開・API キーの入力画面を削除。
+* 本物の Claude Code（2.1.226）で確認済み：`approve` には `{tool_name, input, tool_use_id}` が届き、許可すると Orca の道具が実行され、結果が回答に入る（`claude_cli.rs` の `#[ignore]` のテスト。`cargo test --features ai real_claude -- --ignored --nocapture`）。
+* テスト用の実行ファイルで Tauri の型（`AppHandle`・`Channel`）を実際に作ると、comctl32 v6 の関数が見つからず起動に失敗する（`STATUS_ENTRYPOINT_NOT_FOUND`）。承認の待ち合わせを Tauri の型を含まない `Approvals` に分けてテストしている。
+* 削除：`agent.rs`・`provider.rs`・`config.rs`・`server_tools.rs`・`audit.rs`・`web.rs`・`ureq`・監査ログ・`fetch_url`。
+### 12.7 結果（その後の追加）
+* 承認カード・道具の表示に、サーバで実際に実行するコマンドを出す（利用者が判断できるように）。
+* 回答中の進み具合（起動中・考えている・書いている・道具の実行中・承認待ち、経過秒数、出力トークン数）を入力欄の上に出す（`--include-partial-messages` の途中経過から）。
+* モデルの表示と選択（`ai/model_settings.rs`）：
+  * ヘッダに Claude Code のバージョンと、実際に使っているモデル（起動時の通知から）を出す。
+  * 選択肢は Claude Code の設定ファイル（ユーザ → 作業フォルダの `.claude/settings.json` → `settings.local.json` → 管理者の設定の順に上書き）から作る：`model`・`availableModels`・`env` の `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL`。モデルの項目以外（トークン等）は読み取っても画面に渡さない。
+  * 選んだモデルは `--model` で渡す（起動の引数のため、英数字と `-_.:/[]` だけ受け付ける）。会話の途中で変えると、次の質問で Claude Code を起動し直して同じセッションを続ける。
+* 再開したセッションの前の会話（質問・回答・道具の実行とコマンド・結果）をチャット欄に表示する（`ai/sessions.rs`。直近 300 件まで。補足の行・サブエージェントの作業は除く）。
+* AI パネルの色をテーマに合わせる（文字色・背景色から控えめな文字・枠線・下地の色を作る。状態の色はターミナルの明るい赤・黄・緑）。
+* 承認の 2 重の確認（12.2）。本物の Claude Code（2.1.226）で `--permission-mode default` を付けても `approve` を通ることを確認済み。
+* WebFetch を道具から外した（4 章）。
+* セキュリティのレビュー（security-reviewer）の指摘への対応：
+  * 組み込みの道具（Read・Grep・Glob）の承認カードに、主な引数以外（Grep・Glob の検索する場所 `path` 等）もすべて表示する。ネットワーク上のパス（`\\server\share`・`//server/share` 等）は Orca が自動で拒否する（開こうとするだけで Windows がその PC に接続し、ログインの情報を送ってしまうため）。
+  * 「このチャットでは許可」は、道具・タブ・読み取りユーザの組ごとにする（別のタブ・su した後のユーザには広げない）。本番環境・root で読む呼び出しと、組み込みの道具（作業フォルダの外の読み取り）では出さず、毎回確認する。
+  * 既定の作業フォルダを、exe の隣の空のフォルダ `ai-workspace\` にする（作業フォルダの中は Claude Code が承認なしで読めるため、servers.json のある Orca のフォルダや、鍵・認証情報のあるホームのフォルダにしない）。
+  * ファイルを読む道具（read_file・tail_file・search_file）は、普通のファイルのときだけ読む（`if [ -f … ]; then …`。`/dev/zero`・FIFO 等で終わらないコマンドを防ぐ）。隠しシェルは、タイムアウトしたコマンドを Ctrl-C で止める（止めたコマンドの遅れた出力は、次のジョブの乱数入りの目印の外なので結果に混ざらない）。
+  * パスの上限を 1024 バイトにし、組み立てたコマンドが 3,000 バイトを超える呼び出しは断る（端末の 1 行の上限 4,096 バイトで切れてクォートがずれないように）。
+  * MCP サーバ：鍵などの確認を本文を読む前に行う。要求の行とヘッダの合計を 16 KiB まで、要求を受け取りきるまでを 30 秒まで、同時の接続を 16 までにする。`Host` が `127.0.0.1` / `localhost` 以外の要求は断る。待ち受けに `SO_EXCLUSIVEADDRUSE` を付け、ほかのプロセスに同じポートへ割り込ませない（`socket2` を使用。Tauri の依存として `Cargo.lock` にある版）。
+  * 承認の ID が重なる承認は断る（先に待っている承認の回答を横取りさせない）。`--resume` に渡すセッション ID は UUID の形だけ、モデルの指定は `-` で始まる値を受け付けない（Claude Code のオプションとみなさせない）。
+  * セッションの一覧は新しいファイルから開き、題名を探すのは先頭の 4 MiB まで。履歴の 1 件の本文は 20,000 文字までにする。
+* 承認カードの見た目の偽装を防ぐ（Orca 内の Claude による脆弱性チェックで見つかったもの）：
+  * Orca の道具の引数（`session`・`path`・`pattern`）は、制御文字に加えて双方向の書式の文字（U+202A–202E・U+2066–2069・U+061C）・ゼロ幅や見えない書式の文字（U+200B–200F・U+2060–2064・U+FEFF・U+00AD・U+180E）・タグ文字（U+E0000–E007F）を拒否する（`tools::is_hidden_char`）。
+  * 承認カード・道具の表示では、組み込みの道具（Orca が引数を検証しない）や検証で断る呼び出しも含め、これらの文字を `<U+202E>` の形で見せる（`tools::reveal_hidden`）。
+  * 隠し文字の範囲に、行・段落の区切り（U+2028・2029）、空白に見える文字（U+115F・1160・3164・FFA0・2800 等）、異体字セレクタ（U+FE00–FE0F・U+E0100–E01EF）も含める（画面側は、絵文字で普通に使う U+FE0E・FE0F を除く）。
+  * AI の回答（本文・インラインのコード・コードブロック）でも同じ文字を `<U+202E>` の形で見せる（`components/ai/hiddenChars.ts` の rehype プラグイン。ESC 等の制御文字も含む・改行とタブは除く）。見えない文字を含むコードブロックは「Insert」を無効にして警告を出す（読んだログ等に仕込まれた指示で、見た目と中身の違うコマンドを提案させ、ターミナルに挿入させる経路を防ぐ）。「Copy」は見えている形をコピーする。

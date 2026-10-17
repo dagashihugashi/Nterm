@@ -49,22 +49,35 @@ Windows 向けの SSH ターミナルクライアントです（Tera Term / RLog
 
 左端の ✨ アイコンで右側にチャットを開き、ターミナルの出力やサーバのログ・設定ファイルについて質問できます。AI 機能を含まない版は `Orca-NoAI.exe` です。
 
-- **読み取りのみ**: AI はファイルの一覧・属性・範囲読み・末尾読み・文字列検索と、ターミナルの直近の出力の読み取りしかできません。コマンドの実行・ファイルの変更・ターミナルへの入力はできません。AI が提案したコマンドは、コードブロックの「Insert」でターミナルに挿入できます（Enter は送らないので、内容を確認してから実行してください）。
-- **毎回確認**: AI がサーバを読むたびに、ツール・サーバ・環境・読み取るユーザー・パスを表示して確認します。「Allow ○○ in this chat」を選ぶと、そのチャットの間は同じツールを確認なしで許可します。
+**この PC にインストールされている Claude Code（`claude` コマンド）を使います。** Claude Code をインストールし、ターミナルで `claude` が使える（ログイン済み）状態にしてください。認証（サブスクリプション・Amazon Bedrock 等）・ユーザの CLAUDE.md と設定（`%USERPROFILE%\.claude\`）・会社の管理設定は、普段の Claude Code のものがそのまま使われます。
+
+作業フォルダの設定（`.claude\settings.json`・`settings.local.json`）は、安全のため読み込みません（中の hooks 等で PC 上のコマンドが動いてしまうため）。作業フォルダの CLAUDE.md は、Orca が文章だけを読んで Claude Code に渡します（`@ファイル名` の取り込みは使えません）。
+
+### 仕組み
+
+Orca は Claude Code を窓を出さずに起動し、PC の中だけで動く MCP サーバ（127.0.0.1 でだけ待ち受け、起動ごとの鍵で認証）を通して、サーバを読む道具を Claude Code に渡します。VS Code の拡張機能と同じ仕組みです。
+
+- **サーバは読み取りのみ**: Claude Code がサーバに対してできるのは、Orca の道具（ファイルの一覧・属性・範囲読み・末尾読み・文字列検索、ターミナルの直近の出力の読み取り）だけです。コマンドの実行・ファイルの変更・ターミナルへの入力はできず、サーバから外部への通信も行いません。
+- **手元の PC で使える道具**: 読み取り（Read / Grep / Glob）と Web の検索（WebSearch）だけです。Bash・ファイルの編集は使えません（AI が PC から ssh してサーバを操作することもできません）。Web の検索は確認なしで使えます。Web のページの取得（WebFetch）は使えません（PC から直接 Web に接続するため）。
+- **毎回確認**: AI がサーバを読むたびに、道具・サーバ・環境・読み取るユーザー・**サーバで実際に実行するコマンド**を表示して確認します（本番環境・root は赤で強調）。「Allow ○○ on this tab in this chat」を選ぶと、そのチャットの間は、同じタブ・同じユーザでの同じ道具を確認なしで許可します（本番環境・root で読む場合は毎回確認します）。作業フォルダの外のファイルを読む場合も、Claude Code が Orca に確認を求めます（毎回確認。ネットワーク上のパスは Orca が自動で断ります）。
+- **確認は飛ばせません**: Claude Code の設定（`permissions.allow` や `bypassPermissions` 等）にかかわらず、Orca は承認カードで許可した呼び出しだけをサーバで実行します。
 - **読み取るユーザー**: ユーザー切り替えの自動化を設定しているサーバでは、切り替えた後のユーザー（root 等）の権限で読みます（ファイルツリーと同じ）。
+- **コマンドの提案**: AI が提案したコマンドは、コードブロックの「Insert」でターミナルに挿入できます（Enter は送らないので、内容を確認してから実行してください）。見えない文字や文字の向きを変える文字（見た目と中身を食い違わせられる文字）は `<U+202E>` のように表示し、それを含むコードブロックは挿入できません。
 - **引用**: ターミナルで選択して `Ctrl+Shift+A`（またはチャット欄の「Quote selection」）で、選択範囲を質問に貼り付けます。
-- **送信されるデータ**: 質問と、AI が読んだファイルの内容・ターミナルの出力は、AI サービスへ送信されます。
+- **送信されるデータ**: 質問と、AI が読んだファイルの内容・ターミナルの出力・Web のページの内容は、Claude Code を通して AI サービスへ送信されます。
 
-### 接続先の設定
+### 作業フォルダとセッション
 
-| 接続先 | 設定 |
-| :--- | :--- |
-| Amazon Bedrock | Claude Code の設定ファイル（`%USERPROFILE%\.claude\settings.json`）の `env` を読みます。`CLAUDE_CODE_USE_BEDROCK`・`AWS_REGION`・`AWS_BEARER_TOKEN_BEDROCK`（API キー）・`ANTHROPIC_MODEL`（モデル ID。`sonnet` 等の別名の場合は `ANTHROPIC_DEFAULT_SONNET_MODEL`）。同じ名前の環境変数があればそちらを優先します。Orca はこのファイルを書き換えません |
-| Anthropic API | チャット欄の鍵のアイコンから API キーを入力します（DPAPI で暗号化して `credentials.json` に保存）。環境変数 `ANTHROPIC_API_KEY` でも指定できます |
+- チャット欄の上部に、Claude Code の作業フォルダ（既定は exe の隣の空のフォルダ `ai-workspace\`）が表示されます。作業フォルダの中のファイルは Claude Code が確認なしで読めるため、鍵や認証情報のあるフォルダ（ホームのフォルダ等）は選ばないでください。「Change」で変更できます。作業フォルダの CLAUDE.md が読み込まれ、会話はそのフォルダのセッションとして Claude Code が保存します（`%USERPROFILE%\.claude\projects\`）。
+- 時計のアイコンで、作業フォルダの保存されたセッションの一覧を開き、選ぶと続きから質問できます（同じフォルダなら VS Code 等で始めたセッションも再開できます）。前の会話（直近 300 件まで）がチャット欄に表示されます。
+- 「Stop」で中止すると Claude Code を終了させ、次の質問で同じセッションを続けます。
+- 回答中は、入力欄の上に状態（考えている・書いている・道具の実行中・承認待ち）と経過時間・出力トークン数が表示されます。
 
-プロキシは環境変数（`HTTPS_PROXY` 等）に従います（Claude Code と同じ）。
+### モデル
 
-AI とのやりとり（質問・承認/拒否・AI が読んだ内容・回答）は、`logs\ai-audit-YYYY-MM-DD.jsonl` に記録されます。
+- チャット欄の上部に、Claude Code のバージョンと実際に使っているモデル（最初の質問の後）が表示されます。
+- 「Model」で使うモデルを選べます。選択肢は Claude Code の設定ファイル（`%USERPROFILE%\.claude\settings.json`、作業フォルダの `.claude\settings.json` / `settings.local.json`、管理者の設定）の `model`・`availableModels`・`env` の `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` 等から作ります（モデル以外の値は読みません）。「Custom…」で任意のモデル ID・推論プロファイルの ARN も指定できます。
+- 会話の途中でモデルを変えると、次の質問から新しいモデルで同じ会話を続けます。
 
 ## 作成されるファイル（exe と同じフォルダ）
 
@@ -74,7 +87,8 @@ AI とのやりとり（質問・承認/拒否・AI が読んだ内容・回答�
 | `credentials.json` | 保存したパスワード（DPAPI で暗号化。**他の PC・他のユーザーでは使えません**） |
 | `known_hosts` | 接続したサーバのホスト鍵（OpenSSH 形式） |
 | `themes.json` | カラーテーマ（初回起動時に既定の内容で作成） |
-| `logs\` | ログ取得の既定の保存先。AI の監査ログ（`ai-audit-YYYY-MM-DD.jsonl`、Orca のみ）もここに保存 |
+| `logs\` | ログ取得の既定の保存先 |
+| `ai-workspace\` | AI アシスタント（Claude Code）の既定の作業フォルダ（Orca のみ。空のフォルダ） |
 
 新しいバージョンに入れ替えるときは、これらのファイルを新しい exe と同じフォルダにコピーしてください。
 
@@ -103,13 +117,22 @@ AI とのやりとり（質問・承認/拒否・AI が読んだ内容・回答�
 
 ## 開発者向け
 
+ビルドに必要なもの:
+
+- Node.js（npm）
+- Rust（MSVC 版。`rustup` の既定）
+- Visual Studio Build Tools（「C++ によるデスクトップ開発」：MSVC と Windows SDK。Rust のリンクと OpenSSL のビルドに使います）
+- Perl（OpenSSL をソースからビルドするため。Strawberry Perl のポータブル版で可。Git for Windows に付属の Perl は使えないため、PATH では Strawberry Perl を先にしてください）
+
+実行には WebView2 ランタイム（Windows 11 は標準で入っています）、AI アシスタントには Claude Code が必要です。
+
 ```sh
 npm install
 npm run tauri dev                  # 開発用に起動（設定は src-tauri/target/debug に保存）
 npm run tauri build -- --no-bundle    # src-tauri/target/release/Orca.exe を作成
 ```
 
-`Orca` は AI あり版（正規版。AI 機能は開発中、設計は [AI.md](AI.md)）です。AI 機能を含まない `Orca-NoAI` は次のコマンドで作ります。
+`Orca` は AI あり版（正規版。設計は [AI.md](AI.md) 12 章）です。AI 機能を含まない `Orca-NoAI` は次のコマンドで作ります。
 
 ```sh
 npm run tauri:dev:noai                 # 開発用に起動
@@ -121,7 +144,7 @@ npm run check:no-ai                    # Orca-NoAI.exe と dist/ に AI のコ�
 
 ### 社内でビルドする場合（クレートのミラーを使う環境）
 
-- OpenSSL をソースからビルドするため Perl が必要です（Strawberry Perl のポータブル版で可）。
+- npm のパッケージ・Rust のクレートは社内のミラーから取得します（bun は使いません）。
 - `Cargo.toml` の依存は「メジャー.マイナー」までの指定にしてあり、ミラーにある互換の版で解決できます。ただし `Cargo.lock` に記録された版がミラーにない場合はビルドが止まるため、その場合は lock ファイルをミラーの版で作り直してからビルドしてください（作り直した `Cargo.lock` はコミットしなくてかまいません）。
 
 ```sh

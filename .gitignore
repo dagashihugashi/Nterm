@@ -18,6 +18,7 @@ servers.json
 credentials.json
 known_hosts
 themes.json
+ai-workspace
 *.tmp
 
 # Editor directories and files

@@ -29,6 +29,8 @@ const MARKER_PREFIX: &str = "__NTERM_";
 const READ_BUFFER_SIZE: usize = 16 * 1024;
 /// 実行したコマンドを履歴に残さない（root の .bash_history を汚さない）・入力を表示させない
 const SETUP_COMMAND: &str = "unset HISTFILE; stty -echo\r";
+/// タイムアウトしたコマンドを止める（Ctrl-C）
+const INTERRUPT: &str = "\x03";
 
 pub type ListReply = Sender<Result<Vec<RemoteEntry>, String>>;
 #[cfg(feature = "ai")]
@@ -386,6 +388,9 @@ impl ReaderCore {
         if self.current.as_ref().is_some_and(|job| now >= job.deadline) {
             if let Some(job) = self.current.take() {
                 job.collector.fail("the command timed out".to_string());
+                // 終わらないコマンドを Ctrl-C で止める（止めないと次のコマンドが詰まる）。
+                // 止めたコマンドの残りの出力は、次のジョブの目印（乱数入り）の外なので結果に混ざらない
+                self.send(INTERRUPT);
             }
         }
     }
@@ -660,9 +665,38 @@ mod tests {
         let (reply, result) = mpsc::channel();
         core.queue.push_back(ReaderRequest::List { dir: "/etc".to_string(), reply });
         core.tick(now);
+        take_input(&mut core);
         core.tick(now + LIST_TIMEOUT);
         assert!(result.recv().unwrap().is_err());
         assert!(core.current.is_none());
+        // 終わらないコマンドを Ctrl-C で止める
+        assert_eq!(take_input(&mut core), INTERRUPT);
+    }
+
+    #[test]
+    fn output_of_a_timed_out_command_does_not_leak_into_the_next_job() {
+        let now = Instant::now();
+        let mut core = ReaderCore::new(Vec::new(), utf8(), now);
+        let (first_reply, first) = mpsc::channel();
+        core.queue.push_back(ReaderRequest::List { dir: "/stuck".to_string(), reply: first_reply });
+        core.tick(now);
+        let stuck_token = current_token(&core);
+        core.receive(format!("\n{MARKER_PREFIX}BEGIN_{stuck_token}\n").as_bytes(), now);
+        core.tick(now + LIST_TIMEOUT);
+        assert!(first.recv().unwrap().is_err());
+
+        let (second_reply, second) = mpsc::channel();
+        core.queue.push_back(ReaderRequest::List { dir: "/etc".to_string(), reply: second_reply });
+        core.tick(now + LIST_TIMEOUT);
+        let token = current_token(&core);
+        // 止めたコマンドの遅れた出力（終わりの目印を含む）が届いても、次のジョブの結果にはならない
+        core.receive(format!("f\tf\t1\t1.0\tleaked\n{MARKER_PREFIX}END_{stuck_token}_130\n").as_bytes(), now);
+        core.receive(
+            format!("\n{MARKER_PREFIX}BEGIN_{token}\nf\tf\t2\t2.0\thosts\n{MARKER_PREFIX}END_{token}_0\n").as_bytes(),
+            now,
+        );
+        let entries = second.recv().unwrap().unwrap();
+        assert_eq!(entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(), ["hosts"]);
     }
 
     #[test]
