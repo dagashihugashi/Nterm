@@ -34,6 +34,8 @@ const isCtrlShift = (event: KeyboardEvent, code: string) =>
 export const isCopyShortcut = (event: KeyboardEvent) => isCtrlShift(event, 'KeyC');
 /** 貼り付け（Ctrl+Shift+V） */
 export const isPasteShortcut = (event: KeyboardEvent) => isCtrlShift(event, 'KeyV');
+/** 選択範囲を AI のチャットに引用する（Ctrl+Shift+A。AI あり版のみ） */
+export const isQuoteShortcut = (event: KeyboardEvent) => isCtrlShift(event, 'KeyA');
 
 /**
  * 末尾の改行を除き、行数を数える。
@@ -75,7 +77,12 @@ async function pasteFromClipboard(
     handlers.onStatus({ kind: 'error', text: errorText(error) });
     return;
   }
-  const request = preparePaste(text ?? '');
+  await pasteText(term, handlers, text ?? '', isDisposed);
+}
+
+/** テキストを貼り付ける（クリップボード・AI の「ターミナルに挿入」で共通）。複数行は確認する */
+async function pasteText(term: Terminal, handlers: ClipboardHandlers, text: string, isDisposed: () => boolean) {
+  const request = preparePaste(text);
   if (request.lineCount === 0) {
     handlers.onStatus({ kind: 'error', text: 'Nothing to paste' });
     return;
@@ -139,5 +146,8 @@ export function attachClipboard(
     container.removeEventListener('paste', blockNativePaste, true);
   };
 
-  return { handleKeyEvent, dispose };
+  /** 指定したテキストを貼り付ける（Enter は送らない） */
+  const insert = (text: string) => void pasteText(term, getHandlers(), text, isDisposed);
+
+  return { handleKeyEvent, insert, dispose };
 }

@@ -1,6 +1,7 @@
 // AI なし版のビルド結果に AI のコードが含まれていないことを確認する（AI.md 9 章）。
 //
-// 使い方（AI なし版のビルド後）: bun scripts/check-no-ai.ts [exe のパス] [dist のフォルダ]
+// 使い方（AI なし版のビルド後）: npm run check:no-ai -- [exe のパス] [dist のフォルダ]
+// （node で直接実行できるよう、TypeScript ではなく JavaScript で書いている）
 // dist/ 以下のファイルと exe（既定: src-tauri/target/release/Orca-NoAI.exe）に、
 // AI の機能だけが持つ文字列が含まれていたら失敗する。
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -21,13 +22,15 @@ const AI_ONLY_STRINGS = [
 const DIST_DIR = "dist";
 const DEFAULT_EXE = "src-tauri/target/release/Orca-NoAI.exe";
 
-const listFiles = (dir: string): string[] =>
+/** @param {string} dir @returns {string[]} */
+const listFiles = (dir) =>
   readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     return statSync(path).isDirectory() ? listFiles(path) : [path];
   });
 
-const findAiStrings = (path: string): string[] => {
+/** @param {string} path @returns {string[]} */
+const findAiStrings = (path) => {
   const content = readFileSync(path);
   return AI_ONLY_STRINGS.filter((text) => content.includes(text));
 };

@@ -2,12 +2,12 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Orca",
   "mainBinaryName": "Orca",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.rinno.nterm",
   "build": {
-    "beforeDevCommand": "bun run dev:ai",
+    "beforeDevCommand": "npm run dev:ai",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build:ai",
+    "beforeBuildCommand": "npm run build:ai",
     "frontendDist": "../dist-ai",
     "features": ["ai"]
   },

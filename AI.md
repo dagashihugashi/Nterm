@@ -117,7 +117,7 @@
 * **認証は API キー（`AWS_BEARER_TOKEN_BEDROCK`）方式で確定**（社用 PC で確認済み）。`Authorization: Bearer` で送るだけでよく、SigV4 の署名は実装しない。
 * **プロキシ**: 社用 PC では設定されている可能性が高いため、初版から `HTTPS_PROXY` / `NO_PROXY` に対応する。
   * プロキシが認証を要求する場合、URL に埋め込んだユーザー名・パスワード（`http://user:pass@host:port`）には対応する。NTLM / Kerberos 認証のプロキシには HTTP クライアントが対応しないため、その場合は別途検討する。
-  * 社内のプロキシが通信を復号して検査している（独自のルート証明書を使う）場合に備え、証明書の検証には **Windows の証明書ストア**を使う。Claude Code 側で `NODE_EXTRA_CA_CERTS` を設定している場合は、その証明書も追加で読み込む。
+  * 証明書の検証は ureq 内蔵のルート証明書（webpki-roots）で行う。社用 PC で Claude Code が `NODE_EXTRA_CA_CERTS` なしで動いている（Node も OS の証明書ストアを使わない）ため、通信を復号して検査するプロキシはないと判断した。当初は Windows の証明書ストア（`platform-verifier`）・Windows のプロキシ設定（`win-system-proxy`）も使う予定だったが、社内のクレートのミラーで解決できない依存を増やさないため外した。
 * エージェントのループ（API 呼び出し → ツール呼び出しの承認・実行 → 結果を返す → 繰り返し）は Orca 内で処理する。ストリーミング応答に対応し、ループの回数に上限を設ける。
 
 | 方式 | 内容 | 良い点 | 懸念 |
@@ -177,7 +177,7 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 | MCP が社内で使えるか | 使えない見込み（Y 案は不採用） |
 | Bedrock の設定は Claude Code の `settings.json` の `env` から読む | 決定 |
 | 認証方式 | API キー（`AWS_BEARER_TOKEN_BEDROCK`）で確定 |
-| プロキシ対応（`HTTPS_PROXY`・Windows の証明書ストア） | 決定（初版から対応） |
+| プロキシ対応（環境変数の `HTTPS_PROXY` 等） | 決定（初版から対応） |
 | プロキシの詳細 | `settings.json` には設定なし（Claude Code と同じ経路で接続できる見込み） |
 | Orca から Bedrock を呼んでよいか | 可（確認済み） |
 | AI なし版・AI あり版の分け方 | Cargo feature で切り替え（決定） |
@@ -225,9 +225,9 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 
 ### 11.5 P0 の結果（完了）
 * Cargo feature `ai`・`src-tauri/src/ai/`・`.env.ai`（`VITE_NTERM_AI=1`）。
-* **AI あり版を正規版とする**：`tauri.conf.json` が AI あり版（`Orca`、`build.features: ["ai"]`、`frontendDist: ../dist-ai`）。AI なし版は `tauri.noai.conf.json` を重ねてビルドする（`Orca-NoAI`、`features: []`、`frontendDist: ../dist`）。`bun run tauri:dev:noai` / `bun run tauri:build:noai`。
+* **AI あり版を正規版とする**：`tauri.conf.json` が AI あり版（`Orca`、`build.features: ["ai"]`、`frontendDist: ../dist-ai`）。AI なし版は `tauri.noai.conf.json` を重ねてビルドする（`Orca-NoAI`、`features: []`、`frontendDist: ../dist`）。`npm run tauri:dev:noai` / `npm run tauri:build:noai`。
 * フロントは `import.meta.env.VITE_NTERM_AI === "1"` のときだけ `lazy(() => import("./components/ai/AiPanel"))` を作る。AI なし版のバンドルに `AiPanel` のチャンクが出力されないことを確認済み。
-* `scripts/check-no-ai.ts`（`bun run check:no-ai`）：AI なし版の `dist/` と `Orca.exe` に AI 固有の文字列がないことを確認する。AI あり版に対して実行すると失敗する（検出できる）ことも確認済み。
+* `scripts/check-no-ai.mjs`（`npm run check:no-ai`）：AI なし版の `dist/` と `Orca.exe` に AI 固有の文字列がないことを確認する。AI あり版に対して実行すると失敗する（検出できる）ことも確認済み。
   * Rust のコマンド名は exe 内で分割されて格納されるため検出に使えない。exe 側は `ai/mod.rs` の `BUILD_MARKER`（`nterm-ai-build`）で検出する。
 * exe の出力先は両方とも `src-tauri/target/release/`。Windows はファイル名の大文字・小文字を区別しないため、cargo の出力 `orca.exe` と `Orca.exe` は同じファイルで、**Orca-NoAI をビルドすると `Orca.exe` は `Orca-NoAI.exe` に置き換わる**。出力先（`CARGO_TARGET_DIR`）を分けると依存関係（OpenSSL のソースビルド・Perl が必要）から作り直しになるため分けない。リリース時は「Orca-NoAI をビルド → `check:no-ai` → Orca をビルド」の順で行えば両方が残る（P4 でスクリプト化）。
 * AI なし版の exe 名は、大文字・小文字の違いだけの名前（例: `oRcA.exe`）にすると Windows では `Orca.exe` と同じファイルになるため、`Orca-NoAI` とした。
@@ -250,7 +250,7 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 | :--- | :--- |
 | `tools.rs` | 7 つのツールの定義（API の `tools`）・引数の検証（絶対パス・制御文字の拒否・行数の上限への丸め）・固定形のコマンドの組み立て。ファイルを読むコマンドは `| head -c` でサーバ側でも出力を打ち切る |
 | `config.rs` | 接続先の決定。Claude Code の `settings.json` の `env` と環境変数（環境変数が優先）。Bedrock では `ANTHROPIC_MODEL` が別名（`sonnet` 等）の場合 `ANTHROPIC_DEFAULT_SONNET_MODEL` を使い、どちらもなければ設定方法をエラーで示す。Anthropic API の既定のモデルは `claude-sonnet-5-5` |
-| `provider.rs` | Bedrock（`/model/{id}/invoke`・Bearer）と Anthropic API（`/v1/messages`・`x-api-key`）の要求の組み立てと送信（`ureq`、証明書の検証は Windows に任せる `platform-verifier`、プロキシは環境変数と Windows の設定）。リージョンは英小文字・数字・ハイフンのみ受け付ける（URL の書き換え防止）。エラーにキーを含めない |
+| `provider.rs` | Bedrock（`/model/{id}/invoke`・Bearer）と Anthropic API（`/v1/messages`・`x-api-key`）の要求の組み立てと送信（`ureq`、証明書は内蔵のルート証明書で検証、プロキシは環境変数）。リージョンは英小文字・数字・ハイフンのみ受け付ける（URL の書き換え防止）。エラーにキーを含めない |
 | `agent.rs` | エージェントのループ（最大 20 回）。API・ツール・承認・通知を trait で差し替えてテスト。中止・失敗後も履歴を API の形式どおりに保つ（tool_use には必ず tool_result。最初の呼び出しの失敗では質問を取り除く） |
 | `audit.rs` | 監査ログ `<設定フォルダ>/logs/ai-audit-YYYY-MM-DD.jsonl`（question / approval / tool_result / answer / error） |
 | `session.rs`・`ssh_client.rs` | セッションスレッドへの AI の要求（コマンドの実行・ターミナルの出力・読み取りユーザ）。ユーザ切り替えを設定していないサーバではログインユーザのまま隠しシェルを開く。設定している場合は切り替え完了まで AI に読ませない |
@@ -259,6 +259,20 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 * タブの情報（タブ名・サーバ名・ホスト・環境・ログインユーザ）は `ai_send` のたびにフロントから受け取る。ツールの実行時は、そのタブ ID が接続中のセッションかを Rust 側で確認する。
 * 「このセッション中は許可」等の権限の設定はフロント側で持ち、承認の要求に自動で回答する（P3）。
 * 未対応（P4 以降で判断）: ストリーミング表示、長い会話の圧縮（コンテキストの上限）。
+
+### 11.8 P3 の結果（完了）
+`src/components/ai/` 以下（AI あり版のみ。初めてパネルを開いたときに読み込む別チャンク）。
+
+| ファイル | 内容 |
+| :--- | :--- |
+| `aiApi.ts` | Rust の型（`AiStatus`・`ReadUser`・`TabInfo`・`ChatEvent`）とコマンドの呼び出し |
+| `useAiChat.ts` | チャットの表示状態。イベントを表示用の項目に変換する `applyEvent`（純粋関数）。「このチャットでは許可」したツールは承認の要求に自動で回答する（新しいチャットで消える） |
+| `ChatItems.tsx` | 質問・回答（Markdown。生の HTML は描画しない、リンクは開かない、画像は読み込まない）・承認カード（本番環境・root は赤で強調）・ツールの実行（折りたたみで結果を表示）・お知らせ |
+| `AiPanel.tsx` | 右パネル（幅変更・閉じても会話を残す）、接続先の表示、新しいチャット、API キーの入力（DPAPI で保存）、入力欄（Enter で送信・IME の変換中は送らない）、選択範囲の引用、中止 |
+
+* コードブロックの「Insert」は、クリップボードの貼り付けと同じ経路でターミナルに入れる（末尾の改行を除く・複数行は確認・Enter は送らない）。対象は押したときに表示していたタブ。
+* `Ctrl+Shift+A`（ターミナル内）で選択範囲をコードブロックとして入力欄に引用する。AI なし版ではこのキーはリモートへ送る。
+* 自動で許可する設定を保存すること（AI.md 5 章の「自動で許可」）は、settings.json の実装時に検討する（現在はチャットごと）。
 
 ### 11.4 決定事項
 * 「AI に聞く」の操作：**Ctrl+Shift+A で選択範囲をチャットに引用＋チャット欄の「選択範囲を引用」ボタン**。右クリックは貼り付けのまま。

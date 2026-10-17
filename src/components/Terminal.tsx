@@ -5,7 +5,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { attachSshSession, type SessionInfo, type SessionPrompts } from '../lib/sshSession';
 import { matchAppShortcut } from '../lib/shortcuts';
-import { attachClipboard, type PasteRequest, type StatusMessage } from '../lib/terminalClipboard';
+import { attachClipboard, isQuoteShortcut, type PasteRequest, type StatusMessage } from '../lib/terminalClipboard';
 
 interface TerminalComponentProps {
   /** 接続先（servers.json の id） */
@@ -27,6 +27,12 @@ interface TerminalComponentProps {
   theme: ITheme;
   /** ファイルツリーの一覧を取得するユーザが変わった（null ならログインユーザ） */
   onTreeUser?: (user: string | null) => void;
+  /** Ctrl+Shift+A で選択範囲を AI に引用する（AI あり版のみ。未指定ならキーはリモートへ送る） */
+  onQuoteSelection?: (text: string) => void;
+  /** 選択範囲が変わった（AI の「選択範囲を引用」ボタン用） */
+  onSelectionChange?: (text: string) => void;
+  /** AI の「ターミナルに挿入」。token が変わるたびに 1 回だけ貼り付ける（Enter は送らない） */
+  insertRequest?: { text: string; token: number } | null;
 }
 
 function createTerminal(container: HTMLElement, theme: ITheme): { term: XTerm; fitAddon: FitAddon } {
@@ -64,10 +70,12 @@ function focusTerminal(term: XTerm, container: HTMLElement) {
 }
 
 export const TerminalComponent: React.FC<TerminalComponentProps> = ({
-  serverId, prompts, onSessionChange, onLogFailed, onStatus, confirmPaste, isActive, focusToken, theme, onTreeUser
+  serverId, prompts, onSessionChange, onLogFailed, onStatus, confirmPaste, isActive, focusToken, theme, onTreeUser,
+  onQuoteSelection, onSelectionChange, insertRequest
 }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
+  const insertRef = useRef<((text: string) => void) | null>(null);
   // 作成時の色（以降の変更は下の effect で反映する）
   const themeRef = useRef(theme);
 
@@ -80,12 +88,16 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
   const onSessionChangeRef = useRef(onSessionChange);
   const onLogFailedRef = useRef(onLogFailed);
   const onTreeUserRef = useRef(onTreeUser);
+  const onQuoteSelectionRef = useRef(onQuoteSelection);
+  const onSelectionChangeRef = useRef(onSelectionChange);
   const clipboardHandlersRef = useRef({ onStatus, confirmPaste });
   const isActiveRef = useRef(isActive);
   useEffect(() => {
     onSessionChangeRef.current = onSessionChange;
     onLogFailedRef.current = onLogFailed;
     onTreeUserRef.current = onTreeUser;
+    onQuoteSelectionRef.current = onQuoteSelection;
+    onSelectionChangeRef.current = onSelectionChange;
     clipboardHandlersRef.current = { onStatus, confirmPaste };
     isActiveRef.current = isActive;
   });
@@ -108,10 +120,18 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
     termRef.current = term;
 
     const clipboard = attachClipboard(term, container, () => clipboardHandlersRef.current);
+    insertRef.current = clipboard.insert;
     // アプリのショートカットはリモートへ送らない（イベントは window へ伝わり、App が処理する）
-    term.attachCustomKeyEventHandler(
-      (event) => matchAppShortcut(event) === null && clipboard.handleKeyEvent(event),
-    );
+    term.attachCustomKeyEventHandler((event) => {
+      const quoteSelection = onQuoteSelectionRef.current;
+      if (quoteSelection && isQuoteShortcut(event)) {
+        event.preventDefault();
+        quoteSelection(term.getSelection());
+        return false;
+      }
+      return matchAppShortcut(event) === null && clipboard.handleKeyEvent(event);
+    });
+    const selectionListener = term.onSelectionChange(() => onSelectionChangeRef.current?.(term.getSelection()));
 
     const handleSessionChange = (info: SessionInfo) => {
       onSessionChangeRef.current?.(info);
@@ -139,11 +159,24 @@ export const TerminalComponent: React.FC<TerminalComponentProps> = ({
       resizeObserver.disconnect();
       if (frame !== undefined) window.cancelAnimationFrame(frame);
       detachSession();
+      selectionListener.dispose();
       clipboard.dispose();
+      insertRef.current = null;
       termRef.current = null;
       term.dispose();
     };
   }, [serverId, prompts]);
+
+  // AI の「ターミナルに挿入」（token が変わったときだけ）
+  const insertToken = insertRequest?.token;
+  const insertRequestRef = useRef(insertRequest);
+  useEffect(() => {
+    insertRequestRef.current = insertRequest;
+  });
+  useEffect(() => {
+    const request = insertRequestRef.current;
+    if (insertToken !== undefined && request) insertRef.current?.(request.text);
+  }, [insertToken]);
 
   return (
     <div

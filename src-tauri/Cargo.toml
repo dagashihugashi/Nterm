@@ -1,6 +1,6 @@
 [package]
 name = "orca"
-version = "0.1.0"
+version = "0.2.0"
 description = "Portable SSH terminal client (Tera Term alternative)"
 authors = ["you"]
 edition = "2021"
@@ -28,12 +28,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # openssl-on-win32: Windows でも libssh2 の暗号バックエンドを OpenSSL にする
 # （既定の WinCNG は curve25519 / ecdh / ed25519 に未対応で、OpenSSH 10 系に接続できない）
-ssh2 = { version = "0.9.6", features = ["vendored-openssl", "openssl-on-win32"] }
-vte = "0.15.0"
+# バージョンは「メジャー.マイナー」までの指定にする（社内のクレートのミラーにある版で解決できるように。README「社内でビルドする場合」）
+ssh2 = { version = "0.9", features = ["vendored-openssl", "openssl-on-win32"] }
+vte = "0.15"
 unicode-width = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-encoding_rs = "0.8.42"
-windows = { version = "0.62.2", features = [
+encoding_rs = "0.8"
+windows = { version = "0.62", features = [
     "Win32_Security_Cryptography",
     "Win32_Foundation",
     # タイトルバーの色（テーマ）。Windows 11 のみ有効
@@ -41,9 +42,9 @@ windows = { version = "0.62.2", features = [
 ] }
 tauri-plugin-dialog = "2"
 clipboard-win = "5"
-# AI の API 呼び出し（AI あり版のみ）。証明書の検証は Windows に任せ（社内プロキシの独自証明書に対応）、
-# プロキシは環境変数と Windows の設定から読む
-ureq = { version = "3.4.2", optional = true, default-features = false, features = ["rustls", "platform-verifier", "win-system-proxy"] }
+# AI の API 呼び出し（AI あり版のみ）。プロキシは環境変数（HTTPS_PROXY 等）から読む（Claude Code と同じ）。
+# 社内のミラーで解決しやすいよう、追加の機能（Windows の証明書ストア・プロキシ設定）は使わない
+ureq = { version = "3", optional = true, default-features = false, features = ["rustls"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -37,6 +37,9 @@ import type {
   SwitchSecretRequest,
 } from "./lib/sshSession";
 import { envLabel, type ServerConfig } from "./types/server";
+// 型のみ（AI なし版のバンドルには含まれない）
+import type { TabInfo } from "./components/ai/aiApi";
+import type { QuoteRequest } from "./components/ai/AiPanel";
 import "./App.css";
 
 type DialogState =
@@ -82,6 +85,14 @@ function App() {
   const [sidebarView, setSidebarView] = useState<SidebarView>("servers");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
+  /** 一度開いた AI パネルは、閉じても会話を残すため破棄しない */
+  const [hasOpenedAiPanel, setHasOpenedAiPanel] = useState(false);
+  /** Ctrl+Shift+A で AI に引用する選択範囲 */
+  const [aiQuote, setAiQuote] = useState<QuoteRequest | null>(null);
+  /** AI の「ターミナルに挿入」（対象のタブのターミナルだけが受け取る） */
+  const [insertRequest, setInsertRequest] = useState<{ tabId: string; text: string; token: number } | null>(null);
+  /** タブごとのターミナルの選択範囲（AI の「選択範囲を引用」ボタン用。表示には使わないため state にしない） */
+  const terminalSelectionsRef = useRef<Record<string, string>>({});
   /** タブIDごとの SSH セッション（Files ビューで現在のタブのセッションを使う） */
   const [tabSessions, setTabSessions] = useState<Record<string, SessionInfo>>({});
   /** ログ取得中のタブIDと書き込み先のパス */
@@ -384,11 +395,52 @@ function App() {
             label: "AI",
             Icon: Sparkles,
             isActive: isAiPanelOpen,
-            onClick: () => setIsAiPanelOpen((open) => !open),
+            onClick: () => {
+              setHasOpenedAiPanel(true);
+              setIsAiPanelOpen((open) => !open);
+            },
           },
         ]
       : []),
   ];
+
+  /** AI に渡す接続中のタブの情報 */
+  const aiTabs: TabInfo[] = tabs.flatMap((tab) => {
+    const session = tabSessions[tab.id];
+    const server = servers.find((s) => s.id === tab.serverId);
+    if (session?.state !== "connected" || !server) return [];
+    return [
+      {
+        sessionId: session.sessionId,
+        title: tab.title,
+        serverName: server.name,
+        host: server.host,
+        env: server.env,
+        loginUser: server.user,
+      },
+    ];
+  });
+
+  /** 選択範囲を AI のチャットに引用する（Ctrl+Shift+A） */
+  const quoteToAi = (text: string) => {
+    if (text.trim() === "") {
+      setStatus({ kind: "info", text: "Nothing selected" });
+      return;
+    }
+    setHasOpenedAiPanel(true);
+    setIsAiPanelOpen(true);
+    setAiQuote((prev) => ({ text, token: (prev?.token ?? 0) + 1 }));
+  };
+
+  /** AI が提案したコマンドを表示中のターミナルに挿入する（Enter は送らない） */
+  const insertIntoTerminal = (text: string) => {
+    if (!connectedSessionId) {
+      setStatus({ kind: "error", text: "Open a connected tab to insert the command" });
+      return;
+    }
+    const tabId = activeTab;
+    setInsertRequest((prev) => ({ tabId, text, token: (prev?.token ?? 0) + 1 }));
+  };
 
   const logDialogTab = dialog?.kind === "start-log" ? tabs.find((t) => t.id === dialog.tabId) : undefined;
   const logDialogSession = logDialogTab ? tabSessions[logDialogTab.id] : undefined;
@@ -486,14 +538,31 @@ function App() {
                 focusToken={focusToken}
                 theme={tabTerminalThemes[tab.id]}
                 onTreeUser={(user) => handleTreeUser(tab.id, user)}
+                onQuoteSelection={AiPanel ? quoteToAi : undefined}
+                onSelectionChange={
+                  AiPanel
+                    ? (text) => {
+                        terminalSelectionsRef.current[tab.id] = text;
+                      }
+                    : undefined
+                }
+                insertRequest={insertRequest?.tabId === tab.id ? insertRequest : null}
               />
             ))}
           </div>
         </div>
 
-        {AiPanel && isAiPanelOpen && (
+        {AiPanel && hasOpenedAiPanel && (
           <Suspense fallback={null}>
-            <AiPanel onClose={() => setIsAiPanelOpen(false)} />
+            <AiPanel
+              isOpen={isAiPanelOpen}
+              onClose={() => setIsAiPanelOpen(false)}
+              tabs={aiTabs}
+              quote={aiQuote}
+              getSelection={() => terminalSelectionsRef.current[activeTab] ?? ""}
+              onInsert={insertIntoTerminal}
+              onStatus={setStatus}
+            />
           </Suspense>
         )}
       </div>

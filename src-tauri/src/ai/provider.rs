@@ -6,7 +6,6 @@
 use std::time::Duration;
 
 use serde_json::{Map, Value};
-use ureq::tls::{RootCerts, TlsConfig};
 
 use super::config::Provider;
 
@@ -102,10 +101,9 @@ pub struct HttpModelClient {
 
 impl HttpModelClient {
     pub fn new(provider: Provider) -> Self {
-        // 証明書の検証は Windows に任せる（社内プロキシの独自のルート証明書に対応）。
-        // プロキシは環境変数（HTTPS_PROXY 等）と Windows の設定から読む（ureq の既定）
+        // 証明書は ureq 内蔵のルート証明書（webpki-roots）で検証する（Claude Code と同じく OS の証明書ストアは使わない）。
+        // プロキシは環境変数（HTTPS_PROXY 等）から読む（ureq の既定）
         let agent = ureq::Agent::config_builder()
-            .tls_config(TlsConfig::builder().root_certs(RootCerts::PlatformVerifier).build())
             .timeout_global(Some(REQUEST_TIMEOUT))
             .http_status_as_error(false)
             .build()

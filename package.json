@@ -1,7 +1,7 @@
 {
   "name": "orca",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,7 @@
     "tauri": "tauri",
     "tauri:dev:noai": "tauri dev --config src-tauri/tauri.noai.conf.json",
     "tauri:build:noai": "tauri build --config src-tauri/tauri.noai.conf.json",
-    "check:no-ai": "bun scripts/check-no-ai.ts"
+    "check:no-ai": "node scripts/check-no-ai.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -25,6 +25,8 @@
     "lucide-react": "^1.52.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
