@@ -50,7 +50,6 @@ pub enum ReaderRequest {
     /// 組み立て済みのコマンドを実行して出力を返す（AI の読み取りツール用）。
     /// `command` は呼び出し側で引数をクォートした 1 行のコマンド
     #[cfg(feature = "ai")]
-    #[cfg_attr(not(test), expect(dead_code, reason = "P2 で AI の読み取りツールから使う"))]
     Run { command: String, max_bytes: usize, reply: RunReply },
 }
 

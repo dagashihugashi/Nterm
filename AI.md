@@ -243,6 +243,23 @@ Claude Code はもともと手元の PC でファイルの読み書き・コマ�
 * `ai/terminal_buffer.rs`（AI あり版のみ）：ログと同じ整形で直近 2,000 行を保持し、未確定の行（プロンプト）も含めて返す。
 * `Run` と `TerminalBuffer` の呼び出し元は P2 で作る。それまでは `#[expect(dead_code)]` を付けており、P2 で使い始めると外し忘れがエラーになる。
 
+### 11.7 P2 の結果（完了）
+`src-tauri/src/ai/` 以下（すべて feature `ai` のみ）。
+
+| ファイル | 内容 |
+| :--- | :--- |
+| `tools.rs` | 7 つのツールの定義（API の `tools`）・引数の検証（絶対パス・制御文字の拒否・行数の上限への丸め）・固定形のコマンドの組み立て。ファイルを読むコマンドは `| head -c` でサーバ側でも出力を打ち切る |
+| `config.rs` | 接続先の決定。Claude Code の `settings.json` の `env` と環境変数（環境変数が優先）。Bedrock では `ANTHROPIC_MODEL` が別名（`sonnet` 等）の場合 `ANTHROPIC_DEFAULT_SONNET_MODEL` を使い、どちらもなければ設定方法をエラーで示す。Anthropic API の既定のモデルは `claude-sonnet-5-5` |
+| `provider.rs` | Bedrock（`/model/{id}/invoke`・Bearer）と Anthropic API（`/v1/messages`・`x-api-key`）の要求の組み立てと送信（`ureq`、証明書の検証は Windows に任せる `platform-verifier`、プロキシは環境変数と Windows の設定）。リージョンは英小文字・数字・ハイフンのみ受け付ける（URL の書き換え防止）。エラーにキーを含めない |
+| `agent.rs` | エージェントのループ（最大 20 回）。API・ツール・承認・通知を trait で差し替えてテスト。中止・失敗後も履歴を API の形式どおりに保つ（tool_use には必ず tool_result。最初の呼び出しの失敗では質問を取り除く） |
+| `audit.rs` | 監査ログ `<設定フォルダ>/logs/ai-audit-YYYY-MM-DD.jsonl`（question / approval / tool_result / answer / error） |
+| `session.rs`・`ssh_client.rs` | セッションスレッドへの AI の要求（コマンドの実行・ターミナルの出力・読み取りユーザ）。ユーザ切り替えを設定していないサーバではログインユーザのまま隠しシェルを開く。設定している場合は切り替え完了まで AI に読ませない |
+| `chat.rs` | Tauri のコマンド `ai_send`（別スレッドで実行し、進行状況をイベントで送る）・`ai_approve`・`ai_cancel`（承認待ちは拒否として扱う）・`ai_reset`・`ai_save_api_key`・`ai_delete_api_key` |
+
+* タブの情報（タブ名・サーバ名・ホスト・環境・ログインユーザ）は `ai_send` のたびにフロントから受け取る。ツールの実行時は、そのタブ ID が接続中のセッションかを Rust 側で確認する。
+* 「このセッション中は許可」等の権限の設定はフロント側で持ち、承認の要求に自動で回答する（P3）。
+* 未対応（P4 以降で判断）: ストリーミング表示、長い会話の圧縮（コンテキストの上限）。
+
 ### 11.4 決定事項
 * 「AI に聞く」の操作：**Ctrl+Shift+A で選択範囲をチャットに引用＋チャット欄の「選択範囲を引用」ボタン**。右クリックは貼り付けのまま。
 * リリースの形：**AI あり版（`Orca`、正規版）と AI なし版（`Orca-NoAI`）の 2 つの zip を同じリリースに並べる。**

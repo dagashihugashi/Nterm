@@ -421,13 +421,22 @@ fn send_command(state: &AppState, session_id: &str, command: SessionCommand) -> 
         .map_err(|_| format!("session is closed: {session_id}"))
 }
 
+/// セッションスレッドへ指示を送る（AI の読み取りツールから使う）
+#[cfg(feature = "ai")]
+pub(crate) fn send_session_command(app: &AppHandle, session_id: &str, command: SessionCommand) -> Result<(), String> {
+    send_command(&app.state::<AppState>(), session_id, command)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .manage(TransferRegistry::default())
+        .manage(TransferRegistry::default());
+    #[cfg(feature = "ai")]
+    let builder = builder.manage(ai::chat::AiState::default());
+    builder
         .invoke_handler(tauri::generate_handler![
             load_servers,
             load_themes,
@@ -456,7 +465,19 @@ pub fn run() {
             provide_switch_secret,
             disconnect_ssh,
             #[cfg(feature = "ai")]
-            ai::ai_status
+            ai::ai_status,
+            #[cfg(feature = "ai")]
+            ai::chat::ai_send,
+            #[cfg(feature = "ai")]
+            ai::chat::ai_approve,
+            #[cfg(feature = "ai")]
+            ai::chat::ai_cancel,
+            #[cfg(feature = "ai")]
+            ai::chat::ai_reset,
+            #[cfg(feature = "ai")]
+            ai::chat::ai_save_api_key,
+            #[cfg(feature = "ai")]
+            ai::chat::ai_delete_api_key
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

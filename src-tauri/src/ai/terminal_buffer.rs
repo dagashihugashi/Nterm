@@ -2,7 +2,6 @@
 //!
 //! ログと同じ整形（ANSI エスケープの除去・BS 等の行内編集の反映）を行い、確定した行を上限まで保持する。
 //! vi / top 等の全画面アプリの画面は、ログと同じく正確には再現できない。
-#![cfg_attr(not(test), expect(dead_code, reason = "P2 で read_terminal ツールから使う"))]
 
 use std::collections::VecDeque;
 

@@ -18,6 +18,8 @@ use crate::sftp::{SftpClient, SftpRequest};
 use crate::ssh_auth::{self, Credential};
 use crate::switch_user::{Action as SwitchAction, SwitchStep, SwitchUserAutomation, SwitchUserNotice};
 use crate::reader_shell::{ReaderEvent, ReaderRequest, ReaderShell};
+#[cfg(feature = "ai")]
+use crate::ai::{AiSessionRequest, ReadUser, TerminalBuffer, TERMINAL_BUFFER_LINES};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// 無通信時の Keepalive 送信間隔（ファイアウォール等による無通信切断を防ぐ）。
@@ -55,6 +57,9 @@ pub enum SessionCommand {
     SetEncoding(TerminalCodec),
     /// ユーザ切り替えのパスワード入力の回答（パスワード, 保存するか）。None はキャンセル
     SwitchUserSecret(Option<(String, bool)>),
+    /// AI の読み取りツールの要求（AI あり版のみ）
+    #[cfg(feature = "ai")]
+    Ai(AiSessionRequest),
     Disconnect,
 }
 
@@ -206,6 +211,9 @@ struct SessionLoop<'a> {
     entered_secrets: HashMap<String, String>,
     /// su した後のユーザの権限でファイル一覧を取得する隠しシェル（準備できるまでは SFTP を使う）
     reader: Option<ReaderShell>,
+    /// ターミナルの直近の出力（AI の read_terminal 用）
+    #[cfg(feature = "ai")]
+    terminal: TerminalBuffer,
 }
 
 fn run_session(
@@ -229,6 +237,8 @@ fn run_session(
         lister_steps: setup.lister_steps,
         entered_secrets: HashMap::new(),
         reader: None,
+        #[cfg(feature = "ai")]
+        terminal: TerminalBuffer::new(TERMINAL_BUFFER_LINES),
     };
     let result = state.run(commands);
     state.shutdown();
@@ -312,6 +322,8 @@ impl SessionLoop<'_> {
                     self.codec = codec;
                 }
                 Ok(SessionCommand::SwitchUserSecret(answer)) => self.provide_switch_secret(answer),
+                #[cfg(feature = "ai")]
+                Ok(SessionCommand::Ai(request)) => self.handle_ai(request),
                 Ok(SessionCommand::Disconnect) | Err(TryRecvError::Disconnected) => {
                     return Ok(Flow::Stop)
                 }
@@ -327,6 +339,8 @@ impl SessionLoop<'_> {
             return Flow::Continue;
         }
         self.record(&text);
+        #[cfg(feature = "ai")]
+        self.terminal.feed(&text);
         self.feed_switch_user(&text);
         match self.events.send(SshEvent::Data(text)) {
             Ok(()) => Flow::Continue,
@@ -495,6 +509,55 @@ impl SessionLoop<'_> {
         drop(self.sftp);
         drop(self.reader);
         close(self.session, &mut self.channel);
+    }
+}
+
+/// AI の読み取りツールの要求（AI あり版のみ）
+#[cfg(feature = "ai")]
+impl SessionLoop<'_> {
+    fn handle_ai(&mut self, request: AiSessionRequest) {
+        // 要求元が待つのをやめている場合は届かなくてよい
+        match request {
+            AiSessionRequest::Run { command, max_bytes, reply } => match self.ai_reader() {
+                Ok(reader) => reader.enqueue(ReaderRequest::Run { command, max_bytes, reply }),
+                Err(message) => {
+                    let _ = reply.send(Err(message));
+                }
+            },
+            AiSessionRequest::ReadTerminal { lines, reply } => {
+                let _ = reply.send(self.terminal.recent(lines));
+            }
+            AiSessionRequest::ReadUser { reply } => {
+                let _ = reply.send(self.read_user());
+            }
+        }
+    }
+
+    /// AI が読むための隠しシェル。ユーザ切り替えを設定していなければログインユーザのまま開く。
+    /// 設定している場合は、切り替え後のユーザでしか読ませない（完了前・失敗時はエラー）
+    fn ai_reader(&mut self) -> Result<&mut ReaderShell, String> {
+        if self.reader.is_none() {
+            if let Some(step) = self.lister_steps.last() {
+                return Err(format!(
+                    "switching to {} has not completed; the AI reads files with that user's permissions",
+                    step.user
+                ));
+            }
+            let channel = open_hidden_shell(self.session)?;
+            let codec = self.codec.fresh();
+            self.reader = Some(ReaderShell::start(channel, Vec::new(), codec, Instant::now()));
+        }
+        self.reader.as_mut().ok_or_else(|| "the reader shell is not available".to_string())
+    }
+
+    fn read_user(&self) -> ReadUser {
+        match &self.reader {
+            Some(reader) if reader.is_ready() => {
+                reader.user().map_or(ReadUser::Login, |user| ReadUser::Switched(user.to_string()))
+            }
+            _ if self.lister_steps.is_empty() => ReadUser::Login,
+            _ => ReadUser::Pending,
+        }
     }
 }
 
